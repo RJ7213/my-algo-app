@@ -1,5 +1,5 @@
 # ==============================================================================
-# MASTER BLUEPRINT V58 — THE ABSOLUTE ZERO-BLINK SCALPER TERMINAL (100% FIXED)
+# MASTER BLUEPRINT V55 — THE SESSIONS-AWARE UNIFIED SCALPER ENGINE (TIME LOCKED)
 # ==============================================================================
 import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
 from datetime import datetime, timedelta, time as datetime_time
@@ -35,9 +35,6 @@ if input_password == "Roshan@715":
             else: st.sidebar.error("🛑 Login Failed.")
         except Exception as e: st.sidebar.error(f"🛑 Error: {str(e)}")
 
-    # ==============================================================================
-    # 🗂️ THE MULTI-TAB ROUTING SYSTEM (RESTORED FROM INTROSPECTIVE OVERWRITE)
-    # ==============================================================================
     tab1, tab2 = st.tabs(["⚡ DIGITAL TERMINAL", "📊 NIFTY 50 CHART"])
 
     with tab1:
@@ -48,7 +45,7 @@ if input_password == "Roshan@715":
                 current_time = ist_now.time()
                 m_open, m_settle, m_close = datetime_time(9, 15), datetime_time(9, 0), datetime_time(15, 30)
                 
-                # SESSIONS TIMING CONFIGURATION (SAFE CLOUD BOUNDARIES)
+                # SESSIONS TIMING CONFIGURATION
                 if current_time >= m_close or current_time < m_settle:
                     session_status, sig_color, js_reload, f_days, t_hour = "🔒 MARKET CLOSED (DISPLAYING LAST SESSION TRADES)", "#ff5252", 300000, 3, "15:30"
                 elif m_settle <= current_time < m_open:
@@ -81,9 +78,8 @@ if input_password == "Roshan@715":
                     oi_bias_text, oi_bias_color = "STRONG BEARISH (PE RUN)", "#ff5252" if call_oi_change > 0 else "STRONG BULLISH", "#00e676"
                     
                     if (current_time >= m_close or current_time < m_settle) or (is_vol_tower and live_spot < (intraday_low - 15.0)):
-                        session_status, sig_color = "🔴 PE STRATEGY ACTIVATED (LAST SETTLEMENT CANDLE PE SIGNAL)", "#ff5252"
+                        session_status, sig_color = "🔴 PE STRATEGY ACTIVATED (LAST SETTLEMENT CANDLE SIGNAL)", "#ff5252"
 
-                    # FIXED: धन अॅप पॅनेल विना-लूप थेट रेंडर झोनमध्ये इन्जेक्ट केले!
                     dhan_card = f"""
                     <div style="background-color:#060814; padding:20px; border-radius:16px; font-family:sans-serif; color:white; max-width:440px; margin:auto; border: 1px solid #1c2136;">
                         <div style="text-align:center; margin-bottom:15px;">
@@ -96,28 +92,22 @@ if input_password == "Roshan@715":
                             💻 <b>Market OI Bias:</b> <span style="color:{oi_bias_color}; font-weight:bold;">{oi_bias_text}</span><br>🟢 <b>Call (CE) Lots:</b> +{call_oi_change:,} | 🔴 <b>Put (PE) Exit:</b> {put_oi_change:,}
                         </div>
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
-                            <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;">
-                                <div style="font-size:11px; color:#8f96a3; font-weight:bold;">9 EMA / 20 EMA</div>
-                                <div style="font-size:16px; font-weight:bold; color:#fff; margin-top:5px;">₹{ema9:.1f} / ₹{ema20:.1f}</div>
-                            </div>
+                            <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;"><div style="font-size:11px; color:#8f96a3; font-weight:bold;">9 EMA / 20 EMA</div><div style="font-size:16px; font-weight:bold; color:#fff; margin-top:5px;">₹{ema9:.1f} / ₹{ema20:.1f}</div></div>
                             <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;">
                                 <div style="font-size:11px; color:#8f96a3; font-weight:bold;">LIVE RSI / VOLUME</div>
                                 <div style="font-size:16px; font-weight:bold; color:#ff5252; margin-top:5px;">{rsi_v:.1f} / {vol_v:,}</div>
                             </div>
                         </div>
-                        <p style='text-align:center; color:#5c6370; margin:10px 0 0 0; font-size:10px;'>⏱ Secure Shield Active | {ist_now.strftime('%H:%M:%S')} IST</p>
+                        <p style='text-align:center; color:#5c6370; margin:10px 0 0 0; font-size:10px;'>⏱ Session Timer Active | {ist_now.strftime('%H:%M:%S')} IST</p>
                     </div>
-                    <script>setTimeout(function(){{ window.location.reload(); }}, {js_reload});</script>"""
+                    <script>
+                    // FIXED: पायथनचा लूप उडवून जावास्क्रिप्टचा कडक विना-क्रॅश लूप लावला!
+                    setTimeout(function(){{ window.location.reload(); }}, {js_reload});
+                    </script>"""
                     components.html(dhan_card, height=450, scrolling=False)
             except: pass
-            
-            # FIXED: 'while True' चा अडकून पडणारा लूप पूर्ण उडवून देऊन सिस्टीम स्वतंत्र केली!
-            st.caption("🔄 Satellite telemetry operational.")
-            if current_time >= m_close or current_time < m_settle: time.sleep(15)
-            else: time.sleep(1.5)
-            st.rerun()
         else:
-            st.info("⏳ Please click CONNECT from the sidebar to initialize your Original Terminal.")
+            st.info("⏳ Please click CONNECT from the sidebar to view your Terminal.")
 
     with tab2:
         st.markdown("<br>", unsafe_allow_html=True)
