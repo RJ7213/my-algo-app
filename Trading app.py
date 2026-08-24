@@ -1,5 +1,5 @@
 # ==============================================================================
-# MASTER BLUEPRINT V60 — THE ULTIMATE CLEAN SHIELD ENGINE (100% VISUAL RESTORED)
+# MASTER BLUEPRINT V61 — TRUE V50 INFUSED SATELLITE ENGINE (100% VISUAL WORKING)
 # ==============================================================================
 import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
 from datetime import datetime, timedelta, time as datetime_time
@@ -40,7 +40,7 @@ if st.session_state['master_unlocked']:
             else: st.sidebar.error("🛑 Login Failed.")
         except Exception as e: st.sidebar.error(f"🛑 Error: {str(e)}")
 
-    # 🚀 STEP 2: RE-STORE THE ORIGINAL LIVE DHAN-STYLE DASHBOARD CANVAS
+    # 🚀 STEP 2: NO TABS! NO MO_PAGE OVERWRITE! PURE V50 NATIVE CANVASS WINDOW
     dhan_app_canvas = st.empty()
     if st.session_state['is_connected'] and st.session_state['smartApi']:
         smartApi = st.session_state['smartApi']
@@ -63,11 +63,16 @@ if st.session_state['master_unlocked']:
                     
                     if ltp_res['status'] and res['status'] and res['data']:
                         live_spot = float(ltp_res['data']['ltp'])
-                        df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume']).tail(30).reset_index(drop=True)
+                        df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+                        
+                        # HUNCH LOCK: हुबेहूब V50 प्रो ची कडक टेल-रिसेट पायपलाईन परत आणली!
+                        df = df.tail(30).reset_index(drop=True)
                         df['9_EMA'] = df['close'].ewm(span=9, adjust=False).mean()
                         df['20_EMA'] = df['close'].ewm(span=20, adjust=False).mean()
+                        
                         delta = df['close'].diff()
-                        df['RSI'] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=13, adjust=False).mean() / delta.clip(upper=0).abs().ewm(com=13, adjust=False).mean().replace(0, 0.00001))))
+                        rs_ratio = delta.clip(lower=0).ewm(com=13, adjust=False).mean() / (-delta.clip(upper=0)).ewm(com=13, adjust=False).mean().replace(0, 0.00001)
+                        df['RSI'] = 100 - (100 / (1 + rs_ratio))
                         
                         last_row = df.iloc[-1]
                         rsi_v = float(last_row['RSI']) if not np.isnan(last_row['RSI']) else 50.0
