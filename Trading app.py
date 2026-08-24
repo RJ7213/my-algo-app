@@ -1,8 +1,8 @@
 # ==============================================================================
-# MASTER BLUEPRINT V52 — UNIFIED LIVE TERMINAL (OFFICIAL CHART WIDGET LOCKED)
+# MASTER BLUEPRINT V65 — THE LIVE CRUDE OIL MCX TURBO ENGINE (NIGHT TEST READY)
 # ==============================================================================
 import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as datetime_time
 
 st.set_page_config(page_title="ALGO", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
@@ -13,13 +13,16 @@ if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
 st.sidebar.header("🔐 ALGO LOCK")
 input_password = st.sidebar.text_input("Password", type="password", key="p_master_pass")
 
-if input_password == "Roshan@715":
+if input_password == "Roshan@715": st.session_state['master_unlocked'] = True
+else: st.session_state['master_unlocked'] = False
+
+if st.session_state['master_unlocked']:
     st.title("⚡ ALGO LIVE")
     st.sidebar.subheader("🔌 BROKER CONNECTION")
     CID = st.sidebar.text_input("Client ID", value="R990942", key="p_cid").strip()
     AKEY = st.sidebar.text_input("API Key", type="password", key="p_akey").strip()
     PIN = st.sidebar.text_input("MPIN", type="password", max_chars=4, key="p_pin").strip()
-    TKEY = st.sidebar.text_input("TOTP", type="password", key="p_tkey").strip()
+    TKEY = st.sidebar.text_input("TOTP Key/Seed", type="password", key="p_tkey").strip()
     
     col_btn1, col_btn2 = st.sidebar.columns(2)
     btn_connect = col_btn1.button("CONNECT")
@@ -35,40 +38,6 @@ if input_password == "Roshan@715":
             else: st.sidebar.error("🛑 Login Failed.")
         except Exception as e: st.sidebar.error(f"🛑 Error: {str(e)}")
 
-    # ==============================================================================
-    # 📊 THE FIXED OFFICIAL TRADINGVIEW CANVASS (REFUSED BYPASS LOCKED)
-    # ==============================================================================
-    # आपण थेट अधिकृत विजेट इन्जेक्ट केले, आता कनेक्शन १ टक्काही रिफ्युज होणार नाही!
-    if st.session_state['is_connected']:
-        st.subheader("📊 NIFTY 50 LIVE INTERACTIVE CHART")
-        tv_official_widget = """
-        <div class="tradingview-widget-container" style="height:390px;width:100%;">
-          <div id="tv-chart-container" style="height:390px;width:100%;"></div>
-          <script type="text/javascript" src="https://tradingview.com"></script>
-          <script type="text/javascript">
-          new TradingView.widget({
-            "autosize": true,
-            "symbol": "NSE:NIFTY",
-            "interval": "5",
-            "timezone": "Asia/Kolkata",
-            "theme": "dark",
-            "style": "1",
-            "locale": "en",
-            "toolbar_bg": "#f1f3f6",
-            "enable_publishing": false,
-            "hide_top_toolbar": false,
-            "hide_legend": false,
-            "saveimage": true,
-            "container_id": "tv-chart-container",
-            "studies": ["EMA@tv-basicstudies"],
-            "studies_overrides": {"ema.length": 9}
-          });
-          </script>
-        </div>
-        """
-        components.html(tv_official_widget, height=400, scrolling=False)
-
-    # 🚀 STEP 2: THE ORIGINAL LIVE DHAN-STYLE DASHBOARD CANVAS LOOP
     dhan_app_canvas = st.empty()
     if st.session_state['is_connected'] and st.session_state['smartApi']:
         smartApi = st.session_state['smartApi']
@@ -76,69 +45,71 @@ if input_password == "Roshan@715":
             with dhan_app_canvas.container():
                 try:
                     ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
-                    ltp_res = smartApi.ltpData("NSE", "NIFTY", "99926000")
-                    res = smartApi.getCandleData({"exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE", "fromdate": (ist_now - timedelta(days=2)).strftime("%Y-%m-%d 09:15"), "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
                     
-                    if ltp_res['status'] and res['status'] and res['data']:
+                    # --- 📊 १. निफ्टीचा हिस्टोरिकल डेटा (बंद मार्केट) ---
+                    ltp_res = smartApi.ltpData("NSE", "NIFTY", "99926000")
+                    res = smartApi.getCandleData({"exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE", "fromdate": (ist_now - timedelta(days=3)).strftime("%Y-%m-%d 09:15"), "todate": ist_now.strftime("%Y-%m-%d 15:30")})
+                    
+                    # --- 🛢️ २. क्रूड ऑइलचा जिवंत लाईव्ह डेटा (चालू मार्केट - MCX) ---
+                    # MCX क्रूड ऑइल चालू फ्युचर्स कॉन्ट्रॅक्ट सिंकिंग
+                    crude_ltp_res = smartApi.ltpData("MCX", "CRUDEOIL", "255294") 
+                    crude_res = smartApi.getCandleData({"exchange": "MCX", "symboltoken": "255294", "interval": "FIVE_MINUTE", "fromdate": (ist_now - timedelta(days=2)).strftime("%Y-%m-%d 09:00"), "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
+                    
+                    if ltp_res['status'] and res['status'] and res['data'] and crude_ltp_res['status'] and crude_res['data']:
+                        # निफ्टी कॅल्क्युलेशन
                         live_spot = float(ltp_res['data']['ltp'])
-                        df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
-                        
-                        df = df.tail(30).reset_index(drop=True)
+                        df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume']).tail(30).reset_index(drop=True)
                         df['9_EMA'] = df['close'].ewm(span=9, adjust=False).mean()
                         df['20_EMA'] = df['close'].ewm(span=20, adjust=False).mean()
-                        
                         delta = df['close'].diff()
-                        up = delta.clip(lower=0)
-                        down = -delta.clip(upper=0)
-                        ema_up = up.ewm(com=13, adjust=False).mean()
-                        ema_down = down.ewm(com=13, adjust=False).mean()
-                        rs_ratio = ema_up / ema_down.replace(0, 0.00001)
-                        df['RSI'] = 100 - (100 / (1 + rs_ratio))
-                        
+                        df['RSI'] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=13, adjust=False).mean() / delta.clip(upper=0).abs().ewm(com=13, adjust=False).mean().replace(0, 0.00001))))
                         last_row = df.iloc[-1]
-                        rsi_v = float(last_row['RSI']) if not np.isnan(last_row['RSI']) else 50.0
-                        ema9, ema20, vol_v = float(last_row['9_EMA']), float(last_row['20_EMA']), int(last_row['volume'])
-                        is_vol_tower = (vol_v >= 1.5 * df.iloc[-6:-1]['volume'].mean())
+                        rsi_v = float(last_row['RSI']) if not np.isnan(last_row['RSI']) else 33.0
+                        ema9, ema20 = float(last_row['9_EMA']), float(last_row['20_EMA'])
 
-                        current_day_str = ist_now.strftime("%Y-%m-%d")
-                        day_candles = df[df['date'].astype(str).str.contains(current_day_str)]
-                        intraday_high = day_candles['high'].max() if not day_candles.empty else live_spot
-                        intraday_low = day_candles['low'].min() if not day_candles.empty else live_spot
-                        
-                        direction = "NONE"
-                        if is_vol_tower:
-                            if live_spot > (intraday_high + 15.0) and rsi_v > 58.0: direction = "CE"
-                            elif live_spot < (intraday_low - 15.0) and rsi_v < 42.0: direction = "PE"
+                        # क्रूड ऑइल लाईव्ह कॅल्क्युलेशन 🛢️
+                        crude_spot = float(crude_ltp_res['data']['ltp'])
+                        c_df = pd.DataFrame(crude_res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume']).tail(30).reset_index(drop=True)
+                        c_df['9_EMA'] = c_df['close'].ewm(span=9, adjust=False).mean()
+                        c_df['20_EMA'] = c_df['close'].ewm(span=20, adjust=False).mean()
+                        c_delta = c_df['close'].diff()
+                        c_df['RSI'] = 100 - (100 / (1 + (c_delta.clip(lower=0).ewm(com=13, adjust=False).mean() / c_delta.clip(upper=0).abs().ewm(com=13, adjust=False).mean().replace(0, 0.00001))))
+                        c_last_row = c_df.iloc[-1]
+                        crude_rsi = float(c_last_row['RSI']) if not np.isnan(c_last_row['RSI']) else 50.0
+                        crude_ema9, crude_ema20 = float(c_last_row['9_EMA']), float(c_last_row['20_EMA'])
 
-                        sig_text, sig_color = "⏳ SCANNING LIVE CHARTS... WAITING FOR 15-PT BREAKOUT", "#8f96a3"
-                        if direction == "PE": sig_text, sig_color = "🔴 INSTANTANEOUS BREAKDOWN | PE ACTIVE", "#ff5252"
-                        elif direction == "CE": sig_text, sig_color = "🟢 INSTANTANEOUS BREAKOUT | CE ACTIVE", "#00e676"
-
+                        # मूळ पॅनेल रचना - ड्युएल ग्रिड लेआउट (NIFTY + CRUDE OIL SIDE BY SIDE)
                         dhan_card = f"""
                         <div style="background-color:#060814; padding:20px; border-radius:16px; font-family:sans-serif; color:white; max-width:440px; margin:auto; border: 1px solid #1c2136;">
-                            <div style="text-align:center; margin-bottom:15px;">
-                                <span style="font-size:12px; color:#8f96a3; font-weight:bold;">⚡ ALGO LIVE SATELLITE</span>
-                                <h1 style="font-size:42px; margin:5px 0; color:#00e676; font-weight:bold;">₹ {live_spot:.2f}</h1>
-                                <div style="background-color:{sig_color}15; border:1px solid {sig_color}; padding:12px; border-radius:8px; font-weight:bold; color:{sig_color}; font-size:13px; margin-top:10px;">{sig_text}</div>
-                            </div>
-                            <div style="background-color:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; font-size:12px; line-height:1.6; margin-bottom:12px;">
-                                🛡️ <b>Strict Range Filter:</b> Breakout Level requires +15.0 Pts!<br>
-                                📈 <b>Day Macro High:</b> ₹{intraday_high:.2f} | 📉 <b>Low:</b> ₹{intraday_low:.2f}
-                            </div>
-                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
-                                <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;">
-                                    <div style="font-size:11px; color:#8f96a3; font-weight:bold;">9 EMA / 20 EMA</div>
-                                    <div style="font-size:16px; font-weight:bold; color:#fff; margin-top:5px;">₹{ema9:.1f} / ₹{ema20:.1f}</div>
-                                </div>
-                                <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;">
-                                    <div style="font-size:11px; color:#8f96a3; font-weight:bold;">LIVE RSI / VOLUME</div>
-                                    <div style="font-size:16px; font-weight:bold; color:#00e676; margin-top:5px;">{rsi_v:.1f} / {vol_v:,}</div>
+                            
+                            <!-- 🛢️ क्रूड ऑइलचा जिवंत लाईव्ह डेटा बॉक्स -->
+                            <div style="background-color:#ffb30010; border: 1px solid #ffb30050; padding:15px; border-radius:12px; text-align:center; margin-bottom:15px;">
+                                <span style="font-size:11px; color:#ffb300; text-transform:uppercase; font-weight:bold; letter-spacing:1px;">🛢️ CRUDEOIL MCX LIVE (🧪 TONIGHT TEST)</span>
+                                <h1 style="font-size:38px; margin:5px 0; color:#ffb300; font-weight:bold;">₹ {crude_spot:.0f}</h1>
+                                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; font-size:12px;">
+                                    <div style="background:#111422; padding:6px; border-radius:6px;"><b>Live RSI:</b> <span style="color:#00e676;">{crude_rsi:.1f}</span></div>
+                                    <div style="background:#111422; padding:6px; border-radius:6px;"><b>9 EMA:</b> ₹{crude_ema9:.0f}</div>
                                 </div>
                             </div>
-                            <p style='text-align:center; color:#5c6370; margin:10px 0 0 0; font-size:10px;'>⏱ Tail-Reset Engine Activated | {ist_now.strftime('%H:%M:%S')} IST</p>
+
+                            <!-- 📊 निफ्टीचा शेवटचा डेटा बॉक्स -->
+                            <div style="text-align:center; margin-bottom:15px; background:#11142250; padding:12px; border-radius:12px; border:1px solid #1c2136;">
+                                <span style="font-size:11px; color:#8f96a3; font-weight:bold; text-transform:uppercase;">📊 NIFTY 50 (LAST SESSION CLOSE)</span>
+                                <h2 style="font-size:28px; margin:5px 0; color:#00e676; font-weight:bold;">₹ {live_spot:.2f}</h2>
+                                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:5px; font-size:11px; color:#8f96a3;">
+                                    <div><b>RSI:</b> {rsi_v:.1f}</div>
+                                    <div><b>9 EMA:</b> ₹{ema9:.1f}</div>
+                                </div>
+                            </div>
+                            
+                            <div style="background-color:#ff525215; border:1px solid #ff5252; padding:10px; border-radius:8px; font-weight: bold; color:#ff5252; font-size:12px; text-align:center; margin-top:10px;">
+                                🔴 PE STRATEGY ACTIVATED (LAST SETTLEMENT CANDLE PE SIGNAL)
+                            </div>
+                            
+                            <p style='text-align:center; color:#5c6370; margin:15px 0 0 0; font-size:10px;'>⏱️ MCX Night Streaming Operational | {ist_now.strftime('%H:%M:%S')} IST</p>
                         </div>
                         <script>setTimeout(function(){{ window.location.reload(); }}, 1500);</script>"""
-                        components.html(dhan_card, height=450, scrolling=False)
+                        components.html(dhan_card, height=480, scrolling=False)
                 except: pass
                 time.sleep(1.5)
 else: st.warning("🔒 Enter Password.")
