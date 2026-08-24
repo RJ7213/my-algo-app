@@ -1,44 +1,38 @@
 # ==============================================================================
-# MASTER BLUEPRINT V26.1 — OPTIMIZED WEBSOCKET ENGINE (ZERO FREEZE FIXED)
+# MASTER BLUEPRINT V27 — INSTANT SYNCHRONOUS TICK SCALPER (ZERO FREEZE LOCK)
 # ==============================================================================
 import time
 import pyotp
 import pandas as pd
 import numpy as np
 import streamlit as st
-import streamlit.components.v1 as components
 from datetime import datetime, timedelta
 from SmartApi import SmartConnect
-from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 
-# FIXED: हेडिंग एकदम लहान केले!
 st.set_page_config(page_title="ALGO", page_icon="⚡", layout="centered")
 
 st.markdown("""
     <style>
     .main .block-container { padding-top: 1rem !important; padding-bottom: 1rem !important; }
     div[data-testid="stMetric"] {
-        background-color: #0d1117 !important;
-        border: 1px solid #21262d !important;
+        background-color: #0f121d !important;
+        border: 1px solid #222634 !important;
         border-radius: 12px !important;
         padding: 12px !important;
         text-align: center !important;
     }
-    div[data-testid="stMetricValue"] { font-size: 28px !important; font-weight: bold !important; color: #00e676 !important; }
+    div[data-testid="stMetricValue"] { font-size: 26px !important; font-weight: bold !important; color: #00e676 !important; }
+    div[data-testid="stMetricLabel"] { font-size: 13px !important; color: #8f96a3 !important; }
     </style>
 """, unsafe_allow_html=True)
 
-if 'live_tick_price' not in st.session_state: st.session_state['live_tick_price'] = 24200.0
-if 'live_tick_volume' not in st.session_state: st.session_state['live_tick_volume'] = 0
 if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
 if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
 
-# FIXED: बाजूचे हेडिंग सुद्धा एकदम छोटे केले!
 st.sidebar.header("🔐 ALGO LOCK")
 input_password = st.sidebar.text_input("Password", type="password", key="p_master_pass")
 
 if input_password == "Roshan@715":
-    # FIXED: मुख्य हेडिंग '⚡ ALGO' वर लॉक केले!
     st.title("⚡ ALGO")
     
     st.sidebar.subheader("🔌 CONNECT")
@@ -56,62 +50,76 @@ if input_password == "Roshan@715":
         st.session_state['smartApi'] = None
         st.rerun()
 
-    def on_data(ws, response):
-        if response and 'last_traded_price' in response:
-            st.session_state['live_tick_price'] = float(response['last_traded_price']) / 100
-            st.session_state['live_tick_volume'] = int(response['volume_traded_today'])
-
-    def on_open(ws):
-        correlation_id = "roshan_algo_stream"
-        action = 1 
-        mode = 3 
-        tokens = [{"exchangeType": 1, "tokens": ["99926000"]}]
-        ws.subscribe(correlation_id, action, mode, tokens)
-
-    def on_error(ws, error): print(f"🛑 Error: {error}")
-    def on_close(ws): print("🔴 Closed.")
-
     if btn_connect:
         try:
             totp_code = pyotp.TOTP(TKEY).now()
-            smartApi = SmartConnect(api_key=AKEY)
+            smartApi = SmartConnect(api_key=AKEY, timeout=10)
             session = smartApi.generateSession(CID, PIN, totp_code)
             if session.get('status'):
                 st.session_state['is_connected'] = True
                 st.session_state['smartApi'] = smartApi
-                feedToken = session['data']['feedToken']
-                sws = SmartWebSocketV2(st.session_state['smartApi'].jwtToken, AKEY, CID, feedToken)
-                sws.on_data = on_data
-                sws.on_open = on_open
-                sws.on_error = on_error
-                sws.on_close = on_close
-                sws.connect_async() 
                 st.sidebar.success("🟢 Active!")
             else: st.sidebar.error(f"🛑 {session.get('message')}")
-        except Exception as e: st.sidebar.error(f"🛑 Thread Error: {str(e)}")
+        except Exception as e: st.sidebar.error(f"🛑 Login Error: {str(e)}")
 
-    if st.session_state['is_connected']:
-        live_p = st.session_state['live_tick_price']
-        vol_v = st.session_state['live_tick_volume']
-        
-        st.subheader(f"🔥 NIFTY 50 LIVE: ₹ {live_p:.2f}")
-        
-        ema_v = 24239.0 
-        rsi_v = 38.5    
-        
-        if live_p < len(df) if 'df' in locals() else ema_v:
-            st.error(f"🔴 **BEARISH BREAKDOWN** | PUT ACTIVE")
-            st.info(f"🎯 Target: Below {live_p - 20.0:.1f} | 🛡️ SL: {live_p + 15.0:.1f}")
-        else:
-            st.success(f"🟢 **BULLISH BREAKOUT** | CALL ACTIVE")
-            st.info(f"🎯 Target: Above {live_p + 20.0:.1f} | 🛡️ SL: {live_p - 15.0:.1f}")
+    # DIRECT SYNCHRONOUS REAL-TIME STREAM PIPELINE
+    if st.session_state['is_connected'] and st.session_state['smartApi']:
+        smartApi = st.session_state['smartApi']
+        try:
+            # क्रैश-प्रूफ डायरेक्ट सिंक्रोनस एक्सचेंज डेटा फेच
+            ltp_res = smartApi.ltpData("NSE", "NIFTY", "99926000")
             
-        col1, col2 = st.columns(2)
-        col1.metric("RSI", f"{rsi_v:.1f}", delta="CRASHING 🔥")
-        col2.metric("9 EMA CORRIDOR", f"₹ {ema_v:.1f}", delta=f"{live_p - ema_v:.1f}")
-        
-        # FIXED: ०.५ सेकंदाचा सेफ बफर लावला (No More Freeze!)
-        time.sleep(0.5) 
+            res = smartApi.getCandleData({
+                "exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE",
+                "fromdate": (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d 09:15"),
+                "todate": datetime.now().strftime("%Y-%m-%d %H:%M")
+            })
+            
+            if ltp_res and ltp_res.get('status') and res and res.get('status') and res.get('data'):
+                # थेट चालू सेकंदाचा रिअल-टाइम जिवंत भाव कॅप्चर करणे!
+                live_p = float(ltp_res['data']['ltp'])
+                
+                df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+                df['9_EMA'] = df['close'].ewm(span=9, adjust=False).mean()
+                delta = df['close'].diff()
+                df['RSI'] = 100 - (100 / (1 + ((delta.where(delta > 0, 0)).rolling(14).mean() / (-delta.where(delta < 0, 0)).rolling(14).mean())))
+                df['RSI'] = df['RSI'].fillna(50.0).replace([np.inf, -np.inf], 50.0)
+                
+                last_row = df.iloc[-1]
+                rsi_v, ema_v, vol_v = float(last_row['RSI']), float(last_row['9_EMA']), int(last_row['volume'])
+                is_vol_tower = (vol_v >= 1.5 * df.iloc[-6:-1]['volume'].mean())
+                
+                # मुख्य डिस्प्ले: आता २४,२०० वर फ्रीझ होणार नाही!
+                st.subheader(f"🔥 NIFTY 50 LIVE: ₹ {live_p:.2f}")
+                st.caption(f"⏱️ Instant Sync Time: {datetime.now().strftime('%H:%M:%S.%f')[:-4]}")
+                
+                # --- 🎯 सुधारित प्रॅक्टिकल मार्केट स्ट्रक्चर सिग्नल्स ---
+                # २४,१७२ वर मार्केट गेल्यास कडक पुट दाखवेल आणि २४,१९३ वर येताच सिग्नल्स अचूक री-मॅप करेल!
+                if live_p < (ema_v - 3.0):
+                    st.error(f"🔴 **BEARISH MOMENTUM ACTIVE** | PUT STRATEGY ON")
+                    st.info(f"🎯 Target Corridor: Below {live_p - 20.0:.1f} | 🛡️ SL Swings: {live_p + 15.0:.1f}")
+                elif live_p > (ema_v + 3.0):
+                    st.success(f"🟢 **BULLISH MOMENTUM ACTIVE** | CALL STRATEGY ON")
+                    st.info(f"🎯 Target Corridor: Above {live_p + 20.0:.1f} | 🛡️ SL Swings: {live_p - 15.0:.1f}")
+                else:
+                    st.info("⏳ **ALGO SCALPING CHANNELS...** Consolidating near 9 EMA Corridor.")
+                
+                col1, col2 = st.columns(2)
+                col1.metric("INSTANT RSI (5-Min)", f"{rsi_v:.1f}", delta="BEARISH" if live_p < ema_v else "BULLISH")
+                col2.metric("9 EMA CORRIDOR", f"₹ {ema_v:.1f}", delta=f"{live_p - ema_v:.1f}")
+                
+                col3, col4 = st.columns(2)
+                col3.metric("LAST CANDLE VOLUME", f"{vol_v:,}")
+                col4.metric("VOL TOWER STATUS", "1.5x ACTIVE 🚀" if is_vol_tower else "NORMAL")
+            else:
+                st.warning("⏳ Synchronizing Real-Time Nifty Stream...")
+        except Exception as e:
+            st.sidebar.markdown(f"⏳ Stream Syncing... ({str(e)})")
+            
+        # ०.२ सेकंदाचा कडक हाय-स्पीड रिफ्रेश लूप (No Thread Lock!)
+        time.sleep(0.2)
         st.rerun()
-    else: st.info("⏳ Click CONNECT from sidebar.")
-else: st.warning("🔒 Enter Password.")
+    else:
+        st.info("⏳ Click CONNECT from the sidebar to activate the Live Stream.")
+else:
+    st.sidebar.warning("🔒 Enter Password.")
