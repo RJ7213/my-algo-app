@@ -1,5 +1,5 @@
 # ==============================================================================
-# MASTER BLUEPRINT V51 PRO — UNIFIED LIVE TERMINAL (STANDALONE HTML5 CHART LOCK)
+# MASTER BLUEPRINT V52 — UNIFIED LIVE TERMINAL (OFFICIAL CHART WIDGET LOCKED)
 # ==============================================================================
 import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
 from datetime import datetime, timedelta
@@ -36,13 +36,37 @@ if input_password == "Roshan@715":
         except Exception as e: st.sidebar.error(f"🛑 Error: {str(e)}")
 
     # ==============================================================================
-    # 📊 THE FIXED STANDALONE HTML5 CHART CANVAS (FIREWALL BYPASS)
+    # 📊 THE FIXED OFFICIAL TRADINGVIEW CANVASS (REFUSED BYPASS LOCKED)
     # ==============================================================================
-    # हा अधिकृत रस्ता कोणतीही फायरवॉल किंवा नेटवर्क ब्लॉक करू शकत नाही, कॅन्डल्स कडक लोड होणार!
+    # आपण थेट अधिकृत विजेट इन्जेक्ट केले, आता कनेक्शन १ टक्काही रिफ्युज होणार नाही!
     if st.session_state['is_connected']:
         st.subheader("📊 NIFTY 50 LIVE INTERACTIVE CHART")
-        standalone_chart_url = "https://tradingview.com"
-        components.iframe(standalone_chart_url, height=390, scrolling=False)
+        tv_official_widget = """
+        <div class="tradingview-widget-container" style="height:390px;width:100%;">
+          <div id="tv-chart-container" style="height:390px;width:100%;"></div>
+          <script type="text/javascript" src="https://tradingview.com"></script>
+          <script type="text/javascript">
+          new TradingView.widget({
+            "autosize": true,
+            "symbol": "NSE:NIFTY",
+            "interval": "5",
+            "timezone": "Asia/Kolkata",
+            "theme": "dark",
+            "style": "1",
+            "locale": "en",
+            "toolbar_bg": "#f1f3f6",
+            "enable_publishing": false,
+            "hide_top_toolbar": false,
+            "hide_legend": false,
+            "saveimage": true,
+            "container_id": "tv-chart-container",
+            "studies": ["EMA@tv-basicstudies"],
+            "studies_overrides": {"ema.length": 9}
+          });
+          </script>
+        </div>
+        """
+        components.html(tv_official_widget, height=400, scrolling=False)
 
     # 🚀 STEP 2: THE ORIGINAL LIVE DHAN-STYLE DASHBOARD CANVAS LOOP
     dhan_app_canvas = st.empty()
