@@ -47,13 +47,18 @@ if st.session_state['master_unlocked']:
                     else:
                         session_status, sig_color, js_reload, f_days, t_hour = "⏳ ALGO SCALPING SCANNERS ACTIVE... WAITING FOR 15-PT BREAKOUT", "#8f96a3", 2000, 2, "%H:%M"
 
+                    # API Calls
                     ltp_res = smartApi.ltpData("NSE", "NIFTY", "99926000")
                     res = smartApi.getCandleData({"exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE", "fromdate": (ist_now - timedelta(days=f_days)).strftime("%Y-%m-%d 09:15"), "todate": ist_now.strftime(f"%Y-%m-%d {t_hour}")})
                     
                     crude_ltp_res = smartApi.ltpData("MCX", "CRUDEOIL", "255294")
                     crude_res = smartApi.getCandleData({"exchange": "MCX", "symboltoken": "255294", "interval": "FIVE_MINUTE", "fromdate": (ist_now - timedelta(days=2)).strftime("%Y-%m-%d 09:00"), "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
 
-                    if ltp_res['status'] and res['status'] and res['data'] and crude_ltp_res['status'] and crude_res['data']:
+                    # SAFE CHECKING: डेटा खरोखर डिक्शनरी आहे की नाही आणि त्यात 'status' आहे का हे आधी तपासणे
+                    is_nifty_ok = isinstance(ltp_res, dict) and ltp_res.get('status') and isinstance(res, dict) and res.get('status') and res.get('data')
+                    is_crude_ok = isinstance(crude_ltp_res, dict) and crude_ltp_res.get('status') and isinstance(crude_res, dict) and crude_res.get('status') and crude_res.get('data')
+
+                    if is_nifty_ok and is_crude_ok:
                         live_spot = float(ltp_res['data']['ltp'])
                         df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume']).tail(30).reset_index(drop=True)
                         df['9_EMA'] = df['close'].ewm(span=9, adjust=False).mean()
@@ -108,6 +113,9 @@ if st.session_state['master_unlocked']:
                         </div>
                         """
                         components.html(dhan_card, height=480, scrolling=False)
+                    else:
+                        # जर API ने चुकीचा रिस्पॉन्स दिला, तर लूप क्रॅश न करता फक्त स्क्रीनवर नोटीस दाखवेल आणि पुन्हा प्रयत्न करेल
+                        st.warning("⚠️ API डेटा लोड होत नाहीये... पुन्हा प्रयत्न करत आहे (API Fetch Issue)")
+                        
                 except Exception as e:
                     st.error(f"Error in Live Loop: {str(e)}")
-            time.sleep(2)
