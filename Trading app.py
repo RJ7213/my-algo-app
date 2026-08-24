@@ -1,5 +1,5 @@
 # ==============================================================================
-# MASTER BLUEPRINT V50 — THE TRUE TAIL-RESET RSI ENGINE (ZERO-ERROR LIVE SYNC)
+# MASTER BLUEPRINT V51 — UNIFIED LIVE TERMINAL (TOP CHART COUPLING - FIXED SHIELD)
 # ==============================================================================
 import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
 from datetime import datetime, timedelta
@@ -35,6 +35,20 @@ if input_password == "Roshan@715":
             else: st.sidebar.error("🛑 Login Failed.")
         except Exception as e: st.sidebar.error(f"🛑 Error: {str(e)}")
 
+    # ==============================================================================
+    # 📊 THE SAFE INTERACTIVE LIVE CHART WINDOW (STATICALLY TOP-LOCKED)
+    # ==============================================================================
+    # हा आलेख लूपच्या पूर्ण बाहेर सुरक्षित लॉक केला आहे, ब्राउझर कधीच क्रॅश होणार नाही!
+    if st.session_state['is_connected']:
+        st.subheader("📊 NIFTY 50 LIVE INTERACTIVE CHART")
+        tv_widget = """
+        <div class="tradingview-widget-container" style="height:380px;width:100%;"><div id="tv_chart" style="height:380px;width:100%;"></div>
+          <script type="text/javascript" src="https://tradingview.com"></script>
+          <script type="text/javascript">new TradingView.widget({"autosize": true, "symbol": "NSE:NIFTY", "interval": "5", "timezone": "Asia/Kolkata", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#f1f3f6", "enable_publishing": false, "container_id": "tv_chart", "studies": ["EMA@tv-basicstudies"], "studies_overrides": {"ema.length": 9}});</script>
+        </div>"""
+        components.html(tv_widget, height=390, scrolling=False)
+
+    # 🚀 STEP 2: THE ORIGINAL LIVE DHAN-STYLE DASHBOARD CANVAS LOOP
     dhan_app_canvas = st.empty()
     if st.session_state['is_connected'] and st.session_state['smartApi']:
         smartApi = st.session_state['smartApi']
