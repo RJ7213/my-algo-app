@@ -1,5 +1,5 @@
 # ==============================================================================
-# MASTER BLUEPRINT V23 — ZERO-LAG 1-SECOND INSTANT STREAMING ENGINE (LIVE SCALPER)
+# MASTER BLUEPRINT V23.1 — FIXED IMPORT INSTANT STREAMING ENGINE (ZERO-LAG)
 # ==============================================================================
 import time
 import pyotp
@@ -7,6 +7,8 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from datetime import datetime, timedelta
+# FIXED: लायब्ररी इंपोर्ट कडकडीत इनबिल्ट केली!
+from SmartApi import SmartConnect
 
 st.set_page_config(page_title="Zero-Lag Algo Terminal", page_icon="⚡", layout="centered")
 
