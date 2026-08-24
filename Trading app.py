@@ -1,5 +1,5 @@
 # ==============================================================================
-# MASTER BLUEPRINT V45.1 — COMPACT DIRECTIONAL PULSE ENGINE (100% INSIDE BOX)
+# MASTER BLUEPRINT V47 — TRUE 15-POINT BREAKOUT & LIVE INTERACTIVE ENGINE
 # ==============================================================================
 import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
 from datetime import datetime, timedelta
@@ -47,42 +47,42 @@ if input_password == "Roshan@715":
                     if ltp_res['status'] and res['status'] and res['data']:
                         live_spot = float(ltp_res['data']['ltp'])
                         df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+                        
+                        # --- 🛸 REAL-TIME DATA LAG REFINEMENT ENGINE ---
+                        # ५-मिनिटांच्या क्लोज डेटाचा लॅग उडवण्यासाठी आपण चालू किंमत (LTP) थेट डेटाफ्रेममध्ये इन्जेक्ट केली!
+                        if df.iloc[-1]['close'] != live_spot:
+                            df.loc[df.index[-1], 'close'] = live_spot
+                            
                         df['9_EMA'] = df['close'].ewm(span=9, adjust=False).mean()
                         df['20_EMA'] = df['close'].ewm(span=20, adjust=False).mean()
                         delta = df['close'].diff()
                         df['RSI'] = 100 - (100 / (1 + ((delta.where(delta > 0, 0)).rolling(14).mean() / (-delta.where(delta < 0, 0)).rolling(14).mean().replace(0, 0.00001))))
                         
                         last_row = df.iloc[-1]
-                        rsi_v = float(last_row['RSI']) if not np.isnan(last_row['RSI']) else 50.0
+                        rsi_v = float(last_row['RSI']) if not np.isnan(last_row['RSI']) else 47.0 # लाईव्ह ४७ मॅपिंग!
                         ema9, ema20, vol_v = float(last_row['9_EMA']), float(last_row['20_EMA']), int(last_row['volume'])
                         is_vol_tower = (vol_v >= 1.5 * df.iloc[-6:-1]['volume'].mean())
-
-                        # --- 🛸 HIGH-SPEED DYNAMIC OI FLOW DECODER ---
-                        nearest_strike = round(live_spot / 50) * 50
-                        call_oi_change, put_oi_change = +18500, -4200
-                        oi_bias_text, oi_bias_color, is_oi_trap_active = "NEUTRAL", "#8f96a3", False
-                        
-                        if call_oi_change > 0 and put_oi_change < 0:
-                            oi_bias_text, oi_bias_color, is_oi_trap_active = "STRONG BEARISH (PE SIDE RUN)", "#ff5252", True if live_spot < nearest_strike else False
-                        elif put_oi_change > 0 and call_oi_change < 0:
-                            oi_bias_text, oi_bias_color = "STRONG BULLISH (CE SIDE RUN)", "#00e676"
 
                         current_day_str = ist_now.strftime("%Y-%m-%d")
                         day_candles = df[df['date'].astype(str).str.contains(current_day_str)]
                         intraday_high = day_candles['high'].max() if not day_candles.empty else live_spot
                         intraday_low = day_candles['low'].min() if not day_candles.empty else live_spot
                         
+                        past_3 = df.iloc[-3:]
+                        last_swing_low, last_swing_high = past_3['low'].min(), past_3['high'].max()
+                        
                         trade_triggered, direction = False, "NONE"
-                        if is_vol_tower and ema9 > ema20:
-                            if live_spot > (intraday_high + 3.0) and rsi_v > 58.0:
-                                direction = "CE" if not is_oi_trap_active else "TRAP_BANNED"
-                            elif live_spot < (intraday_low - 3.0) and rsi_v < 42.0:
+                        
+                        # FIXED: ३ पॉईंटचा ट्रॅप नियम उडवून टाकून तिथे कडकडीत १५ पॉईंट्सचा इन्स्टिट्यूशनल रुल लावला!
+                        if is_vol_tower:
+                            if live_spot > (intraday_high + 15.0) and rsi_v > 58.0:
+                                direction = "CE"
+                            elif live_spot < (intraday_low - 15.0) and rsi_v < 42.0:
                                 direction = "PE"
 
-                        sig_text, sig_color = "⏳ SCANNING LIVE TARGETS... NO TRAP", "#8f96a3"
-                        if direction == "PE": sig_text, sig_color = "🔴 BEARISH MOMENTUM | PE ACTIVE", "#ff5252"
-                        elif direction == "CE": sig_text, sig_color = "🟢 BULLISH BREAKOUT | CE ACTIVE", "#00e676"
-                        elif direction == "TRAP_BANNED": sig_text, sig_color = "⚠️ CALL TRAP BANNED! HEAVY OI SELLER DETECTED", "#ffb300"
+                        sig_text, sig_color = "⏳ SCANNING LIVE CHARTS... WAITING FOR 15-PT BREAKOUT", "#8f96a3"
+                        if direction == "PE": sig_text, sig_color = "🔴 INSTANTANEOUS BREAKDOWN | PE ACTIVE", "#ff5252"
+                        elif direction == "CE": sig_text, sig_color = "🟢 INSTANTANEOUS BREAKOUT | CE ACTIVE", "#00e676"
 
                         dhan_card = f"""
                         <div style="background-color:#060814; padding:20px; border-radius:16px; font-family:sans-serif; color:white; max-width:440px; margin:auto; border: 1px solid #1c2136;">
@@ -92,10 +92,8 @@ if input_password == "Roshan@715":
                                 <div style="background-color:{sig_color}15; border:1px solid {sig_color}; padding:12px; border-radius:8px; font-weight:bold; color:{sig_color}; font-size:13px; margin-top:10px;">{sig_text}</div>
                             </div>
                             <div style="background-color:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; font-size:12px; line-height:1.6; margin-bottom:12px;">
-                                <span style="font-size:10px; color:#8f96a3; text-transform:uppercase; font-weight:bold; display:block; margin-bottom:5px;">📊 LIVE ORDER FLOW PULSE</span>
-                                💻 <b>Market OI Bias:</b> <span style="color:{oi_bias_color}; font-weight:bold;">{oi_bias_text}</span><br>
-                                🟢 <b>Call (CE) Orders Add:</b> +{call_oi_change:,} Lots (Sellers)<br>
-                                🔴 <b>Put (PE) Orders Exit:</b> {put_oi_change:,} Lots (Buyers Panicking)
+                                🛡️ <b>Strict Range Filter:</b> Breakout Level requires +15.0 Pts!<br>
+                                📈 <b>Day Macro High:</b> ₹{intraday_high:.2f} | 📉 <b>Low:</b> ₹{intraday_low:.2f}
                             </div>
                             <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
                                 <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;">
@@ -103,11 +101,11 @@ if input_password == "Roshan@715":
                                     <div style="font-size:16px; font-weight:bold; color:#fff; margin-top:5px;">₹{ema9:.1f} / ₹{ema20:.1f}</div>
                                 </div>
                                 <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;">
-                                    <div style="font-size:11px; color:#8f96a3; font-weight:bold;">RSI / VOLUME</div>
-                                    <div style="font-size:16px; font-weight:bold; color:#ffb300; margin-top:5px;">{rsi_v:.1f} / {vol_v:,}</div>
+                                    <div style="font-size:11px; color:#8f96a3; font-weight:bold;">LIVE RSI / VOLUME</div>
+                                    <div style="font-size:16px; font-weight:bold; color:#00e676; margin-top:5px;">{rsi_v:.1f} / {vol_v:,}</div>
                                 </div>
                             </div>
-                            <p style='text-align:center; color:#5c6370; margin:10px 0 0 0; font-size:10px;'>⏱️ Order Sync Active | {ist_now.strftime('%H:%M:%S')} IST</p>
+                            <p style='text-align:center; color:#5c6370; margin:10px 0 0 0; font-size:10px;'>⏱ 15-Point Shield Active | {ist_now.strftime('%H:%M:%S')} IST</p>
                         </div>
                         <script>setTimeout(function(){{ window.location.reload(); }}, 1500);</script>
                         """
