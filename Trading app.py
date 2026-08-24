@@ -1,5 +1,5 @@
 # ==============================================================================
-# MASTER BLUEPRINT V51.2 — COMPACT FIXED FORM SUBMIT ENGINE (100% COMPLETE)
+# MASTER BLUEPRINT V53 — UNIFIED MULTI-TAB ENGINE (ORIGINAL UI + CHART INJECTED)
 # ==============================================================================
 import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
 from datetime import datetime, timedelta
@@ -18,14 +18,13 @@ if input_password == "Roshan@715": st.session_state['master_unlocked'] = True
 else: st.session_state['master_unlocked'] = False
 
 if st.session_state['master_unlocked']:
-    st.title("⚡ ALGO PRO V51.2")
+    st.title("⚡ ALGO PRO V53")
     st.sidebar.subheader("🔌 BROKER CONNECTION")
     with st.sidebar.form("login_form"):
         CID = st.text_input("Client ID", value="R990942", key="p_cid").strip()
         AKEY = st.text_input("API Key", type="password", key="p_akey").strip()
         PIN = st.text_input("MPIN", type="password", max_chars=4, key="p_pin").strip()
         TKEY = st.text_input("TOTP Key/Seed", type="password", key="p_tkey").strip()
-        # FIXED: .sidebar काढून टाकला, आता हा बटन फॉर्मच्या आत कडकडीत मॅप झाला!
         btn_connect = st.form_submit_button("CONNECT LIVE BROKER")
 
     if st.sidebar.button("🔴 LOG OUT SYSTEM"):
@@ -40,15 +39,25 @@ if st.session_state['master_unlocked']:
             else: st.sidebar.error("🛑 Login Failed.")
         except Exception as e: st.sidebar.error(f"🛑 Error: {str(e)}")
 
-    st.subheader("📊 NIFTY 50 LIVE INTERACTIVE CHART")
-    tv_widget = """
-    <div class="tradingview-widget-container" style="height:380px;width:100%;"><div id="tv_chart" style="height:380px;width:100%;"></div>
-      <script type="text/javascript" src="https://tradingview.com"></script>
-      <script type="text/javascript">new TradingView.widget({"autosize": true, "symbol": "NSE:NIFTY", "interval": "5", "timezone": "Asia/Kolkata", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#f1f3f6", "enable_publishing": false, "container_id": "tv_chart", "studies": ["EMA@tv-basicstudies"], "studies_overrides": {"ema.length": 9}});</script>
-    </div>"""
-    components.html(tv_widget, height=390, scrolling=False)
+    # ==============================================================================
+    # 🗂️ THE INDEPENDENT TAB ROUTING SYSTEM (NO COMPONENT CLASH)
+    # ==============================================================================
+    tab1, tab2 = st.tabs(["⚡ DIGITAL TERMINAL", "📊 INTERACTIVE CHART"])
 
-    dhan_app_canvas = st.empty()
+    # --- 🗂️ TAB 1: मूळ धन-स्टाईल डॅशबोर्ड टर्मिनल ---
+    with tab1:
+        dhan_app_canvas = st.empty()
+
+    # --- 🗂️ TAB 2: स्वतंत्र ॲडव्हान्स्ड ट्रेडिंगव्ह्यू कॅन्डलस्टिक चार्ट ---
+    with tab2:
+        tv_widget = """
+        <div class="tradingview-widget-container" style="height:400px;width:100%;"><div id="tv_chart" style="height:400px;width:100%;"></div>
+          <script type="text/javascript" src="https://tradingview.com"></script>
+          <script type="text/javascript">new TradingView.widget({"autosize": true, "symbol": "NSE:NIFTY", "interval": "5", "timezone": "Asia/Kolkata", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#f1f3f6", "enable_publishing": false, "container_id": "tv_chart", "studies": ["EMA@tv-basicstudies"], "studies_overrides": {"ema.length": 9}});</script>
+        </div>"""
+        components.html(tv_widget, height=410, scrolling=False)
+
+    # --- 🚀 STEP 4: LIVE PIPELINE REFRESHING IN THE BACKGROUND ---
     if st.session_state['is_connected'] and st.session_state['smartApi']:
         smartApi = st.session_state['smartApi']
         while True:
@@ -89,22 +98,33 @@ if st.session_state['master_unlocked']:
                         elif direction == "CE": sig_text, sig_color = "🟢 INSTANTANEOUS BREAKOUT | CE ACTIVE", "#00e676"
 
                         dhan_card = f"""
-                        <div style="background-color:#060814; padding:18px; border-radius:16px; font-family:sans-serif; color:white; max-width:440px; margin:auto; border: 1px solid #1c2136;">
-                            <div style="text-align:center; margin-bottom:12px;"><h1 style="font-size:40px; margin:5px 0; color:#00e676; font-weight:bold;">₹ {live_spot:.2f}</h1>
-                                <div style="background-color:{sig_color}15; border:1px solid {sig_color}; padding:10px; border-radius:8px; font-weight:bold; color:{sig_color}; font-size:12px; margin-top:5px;">{sig_text}</div>
+                        <div style="background-color:#060814; padding:20px; border-radius:16px; font-family:sans-serif; color:white; max-width:440px; margin:auto; border: 1px solid #1c2136;">
+                            <div style="text-align:center; margin-bottom:15px;">
+                                <span style="font-size:12px; color:#8f96a3; font-weight:bold;">⚡ ALGO LIVE SATELLITE</span>
+                                <h1 style="font-size:42px; margin:5px 0; color:#00e676; font-weight:bold;">₹ {live_spot:.2f}</h1>
+                                <div style="background-color:{sig_color}15; border:1px solid {sig_color}; padding:12px; border-radius:8px; font-weight:bold; color:{sig_color}; font-size:13px; margin-top:10px;">{sig_text}</div>
                             </div>
-                            <div style="background-color:#111422; border:1px solid #1c2136; padding:10px; border-radius:10px; font-size:11px; line-height:1.5; margin-bottom:10px;">
-                                <span style="font-size:9px; color:#8f96a3; text-transform:uppercase; font-weight:bold; display:block; margin-bottom:3px;">📊 LIVE ORDER FLOW PULSE</span>
-                                💻 <b>Market OI Bias:</b> <span style="color:{oi_bias_color}; font-weight:bold;">{oi_bias_text}</span><br>🔒 <b>Strict Range Cap:</b> 15.0 Pts Breakout Filter Locked
+                            <div style="background-color:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; font-size:12px; line-height:1.6; margin-bottom:12px;">
+                                <span style="font-size:10px; color:#8f96a3; text-transform:uppercase; font-weight:bold; display:block; margin-bottom:5px;">📊 LIVE ORDER FLOW PULSE</span>
+                                💻 <b>Market OI Bias:</b> <span style="color:{oi_bias_color}; font-weight:bold;">{oi_bias_text}</span><br>
+                                🟢 <b>Call (CE) Orders Add:</b> +{call_oi_change:,} Lots (Sellers)<br>
+                                🔴 <b>Put (PE) Orders Exit:</b> {put_oi_change:,} Lots (Buyers)
                             </div>
-                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                                <div style="background:#111422; border:1px solid #1c2136; padding:10px; border-radius:10px; text-align:center;"><div style="font-size:10px; color:#8f96a3; font-weight:bold;">9 EMA / 20 EMA</div><div style="font-size:14px; font-weight:bold; color:#fff; margin-top:3px;">₹{ema9:.1f} / ₹{ema20:.1f}</div></div>
-                                <div style="background:#111422; border:1px solid #1c2136; padding:10px; border-radius:10px; text-align:center;"><div style="font-size:10px; color:#8f96a3; font-weight:bold;">LIVE RSI / VOLUME</div><div style="font-size:14px; font-weight:bold; color:#00e676; margin-top:3px;">{rsi_v:.1f} / {vol_v:,}</div></div>
+                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                                <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;">
+                                    <div style="font-size:11px; color:#8f96a3; font-weight:bold;">9 EMA / 20 EMA</div>
+                                    <div style="font-size:16px; font-weight:bold; color:#fff; margin-top:5px;">₹{ema9:.1f} / ₹{ema20:.1f}</div>
+                                </div>
+                                <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;">
+                                    <div style="font-size:11px; color:#8f96a3; font-weight:bold;">LIVE RSI / VOLUME</div>
+                                    <div style="font-size:16px; font-weight:bold; color:#00e676; margin-top:5px;">{rsi_v:.1f} / {vol_v:,}</div>
+                                </div>
                             </div>
-                            <p style='text-align:center; color:#5c6370; margin:8px 0 0 0; font-size:9px;'>⏱ Platform Engine Synced | {ist_now.strftime('%H:%M:%S')} IST</p>
+                            <p style='text-align:center; color:#5c6370; margin:10px 0 0 0; font-size:10px;'>⏱ Secure Pipeline Active | {ist_now.strftime('%H:%M:%S')} IST</p>
                         </div>
                         <script>setTimeout(function(){{ window.location.reload(); }}, 1500);</script>"""
-                        components.html(dhan_card, height=430, scrolling=False)
+                        components.html(dhan_card, height=450, scrolling=False)
                 except: pass
                 time.sleep(1.5)
+    else: st.info("⏳ Please fill out the form and click CONNECT to initialize your Unified Multi-Tab Terminal.")
 else: st.warning("🔒 Enter Password.")
