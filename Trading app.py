@@ -1,3 +1,43 @@
+import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
+from datetime import datetime, timedelta, time as datetime_time
+
+st.set_page_config(page_title="ALGO", page_icon="⚡", layout="centered")
+st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
+
+if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
+if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
+
+if 'last_valid_data' not in st.session_state:
+    st.session_state['last_valid_data'] = {
+        'live_spot': 24000.0, 'rsi_v': 50.0, 'ema9': 24000.0,
+        'crude_spot': 6500.0, 'crude_rsi': 50.0, 'crude_ema9': 6500.0,
+        'intraday_high': 24100.0, 'intraday_low': 23900.0,
+        'oi_bias_text': "WAITING FOR DATA", 'oi_bias_color': "#8f96a3"
+    }
+
+st.sidebar.header("🔐 ALGO LOCK")
+input_password = st.sidebar.text_input("Password", type="password", key="p_master_pass")
+if input_password == "Roshan@715": st.session_state['master_unlocked'] = True
+else: st.session_state['master_unlocked'] = False
+
+if st.session_state['master_unlocked']:
+    st.title("⚡ ALGO LIVE")
+    CID = st.sidebar.text_input("Client ID", value="R990942", key="p_cid").strip()
+    AKEY = st.sidebar.text_input("API Key", type="password", key="p_akey").strip()
+    PIN = st.sidebar.text_input("MPIN", type="password", max_chars=4, key="p_pin").strip()
+    TKEY = st.sidebar.text_input("TOTP Key/Seed", type="password", key="p_tkey").strip()
+    
+    col_btn1, col_btn2 = st.sidebar.columns(2)
+    if col_btn1.button("CONNECT") and not st.session_state['is_connected']:
+        from SmartApi import SmartConnect
+        try:
+            smartApi = SmartConnect(api_key=AKEY, timeout=15)
+            if smartApi.generateSession(CID, PIN, pyotp.TOTP(TKEY).now())['status']:
+                st.session_state['is_connected'] = True; st.session_state['smartApi'] = smartApi; st.sidebar.success("🟢 Active!")
+        except: pass
+    if col_btn2.button("LOG OUT"):
+        st.session_state['is_connected'] = False; st.session_state['smartApi'] = None; st.rerun()
+
     dhan_app_canvas = st.empty()
     if st.session_state['is_connected'] and st.session_state['smartApi']:
         smartApi = st.session_state['smartApi']
@@ -57,7 +97,6 @@
                             'oi_bias_text': oi_bias_text, 'oi_bias_color': oi_bias_color
                         }
                     else:
-                        # डेटा न आल्यास चेतावणी न दाखवता गपचूप मेमरी डेटा वापरणे
                         live_spot = st.session_state['last_valid_data']['live_spot']
                         rsi_v = st.session_state['last_valid_data']['rsi_v']
                         ema9 = st.session_state['last_valid_data']['ema9']
@@ -99,7 +138,7 @@
                             <div><b>OI Bias:</b> <span style="color:{oi_bias_color}; font-weight:bold;">{oi_bias_text}</span></div>
                         </div>
                         <script>
-                            setTimeout(function(){{{ window.location.reload(); }}}, {js_reload});
+                            setTimeout(function(){{ window.location.reload(); }}, {js_reload});
                         </script>
                     </div>
                     """
