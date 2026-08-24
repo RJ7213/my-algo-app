@@ -1,5 +1,5 @@
 # ==============================================================================
-# MASTER BLUEPRINT V51.1 — CONDENSED MASTER ENGINE (100% INSIDE BOX LOCKED)
+# MASTER BLUEPRINT V51.2 — COMPACT FIXED FORM SUBMIT ENGINE (100% COMPLETE)
 # ==============================================================================
 import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
 from datetime import datetime, timedelta
@@ -18,14 +18,15 @@ if input_password == "Roshan@715": st.session_state['master_unlocked'] = True
 else: st.session_state['master_unlocked'] = False
 
 if st.session_state['master_unlocked']:
-    st.title("⚡ ALGO PRO V51.1")
+    st.title("⚡ ALGO PRO V51.2")
     st.sidebar.subheader("🔌 BROKER CONNECTION")
     with st.sidebar.form("login_form"):
         CID = st.text_input("Client ID", value="R990942", key="p_cid").strip()
         AKEY = st.text_input("API Key", type="password", key="p_akey").strip()
         PIN = st.text_input("MPIN", type="password", max_chars=4, key="p_pin").strip()
         TKEY = st.text_input("TOTP Key/Seed", type="password", key="p_tkey").strip()
-        btn_connect = st.sidebar.form_submit_button("CONNECT LIVE BROKER")
+        # FIXED: .sidebar काढून टाकला, आता हा बटन फॉर्मच्या आत कडकडीत मॅप झाला!
+        btn_connect = st.form_submit_button("CONNECT LIVE BROKER")
 
     if st.sidebar.button("🔴 LOG OUT SYSTEM"):
         st.session_state['is_connected'] = False; st.session_state['smartApi'] = None; st.rerun()
@@ -106,5 +107,4 @@ if st.session_state['master_unlocked']:
                         components.html(dhan_card, height=430, scrolling=False)
                 except: pass
                 time.sleep(1.5)
-    else: st.info("⏳ Please fill out the sidebar connection form and click CONNECT to launch.")
 else: st.warning("🔒 Enter Password.")
