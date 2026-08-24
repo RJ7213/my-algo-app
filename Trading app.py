@@ -1,8 +1,9 @@
 # ==============================================================================
-# MASTER BLUEPRINT V56 — TRUE UNIFIED MULTI-TAB ENGINE (100% WORKING FIXED)
+# MASTER BLUEPRINT V57 — THE SESSIONS-AWARE UNIFIED SCALPER ENGINE (BUG FIXED)
 # ==============================================================================
-import pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
+import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
 from datetime import datetime, timedelta, time as datetime_time
+from SmartApi import SmartConnect # FIXED: डायरेक्ट इंपोर्ट मजबूत केले!
 
 st.set_page_config(page_title="ALGO PRO", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
@@ -27,7 +28,6 @@ if input_password == "Roshan@715":
         st.session_state['is_connected'] = False; st.session_state['smartApi'] = None; st.rerun()
 
     if btn_connect and not st.session_state['is_connected']:
-        from SmartApi import SmartConnect
         try:
             smartApi = SmartConnect(api_key=AKEY, timeout=15)
             if smartApi.generateSession(CID, PIN, pyotp.TOTP(TKEY).now())['status']:
@@ -36,7 +36,7 @@ if input_password == "Roshan@715":
         except Exception as e: st.sidebar.error(f"🛑 Error: {str(e)}")
 
     # ==============================================================================
-    # 🗂️ MULTI-TAB ROUTING SYSTEM (NO COMPONENT CLASH - 100% VISUAL RESTORED)
+    # 🗂️ THE MULTI-TAB ROUTING SYSTEM (100% VISUAL PERSISTENCE FIXED)
     # ==============================================================================
     tab1, tab2 = st.tabs(["⚡ DIGITAL TERMINAL", "📊 NIFTY 50 CHART"])
 
@@ -81,7 +81,7 @@ if input_password == "Roshan@715":
                     oi_bias_text, oi_bias_color = "STRONG BEARISH (PE RUN)", "#ff5252" if call_oi_change > 0 else "STRONG BULLISH", "#00e676"
                     
                     if (current_time >= m_close or current_time < m_settle) or (is_vol_tower and live_spot < (intraday_low - 15.0)):
-                        session_status, sig_color = "🔴 PE STRATEGY ACTIVATED (LAST SETTLEMENT CANDLE SIGNAL)", "#ff5252"
+                        session_status, sig_color = "🔴 PE STRATEGY ACTIVATED (LAST SETTLEMENT CANDLE PE SIGNAL)", "#ff5252"
 
                     dhan_card = f"""
                     <div style="background-color:#060814; padding:20px; border-radius:16px; font-family:sans-serif; color:white; max-width:440px; margin:auto; border: 1px solid #1c2136;">
@@ -95,16 +95,21 @@ if input_password == "Roshan@715":
                             💻 <b>Market OI Bias:</b> <span style="color:{oi_bias_color}; font-weight:bold;">{oi_bias_text}</span><br>🟢 <b>Call (CE) Lots:</b> +{call_oi_change:,} | 🔴 <b>Put (PE) Exit:</b> {put_oi_change:,}
                         </div>
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
-                            <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;"><div style="font-size:11px; color:#8f96a3; font-weight:bold;">9 EMA / 20 EMA</div><div style="font-size:16px; font-weight:bold; color:#fff; margin-top:5px;">₹{ema9:.1f} / ₹{ema20:.1f}</div></div>
-                            <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;"><div style="font-size:11px; color:#8f96a3; font-weight:bold;">LIVE RSI / VOLUME</div><div style="font-size:16px; font-weight:bold; color:#ff5252; margin-top:5px;">{rsi_v:.1f} / {vol_v:,}</div></div>
+                            <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;">
+                                <div style="font-size:11px; color:#8f96a3; font-weight:bold;">9 EMA / 20 EMA</div>
+                                <div style="font-size:16px; font-weight:bold; color:#fff; margin-top:5px;">₹{ema9:.1f} / ₹{ema20:.1f}</div>
+                            </div>
+                            <div style="background:#111422; border:1px solid #1c2136; padding:12px; border-radius:10px; text-align:center;">
+                                <div style="font-size:11px; color:#8f96a3; font-weight:bold;">LIVE RSI / VOLUME</div>
+                                <div style="font-size:16px; font-weight:bold; color:#ff5252; margin-top:5px;">{rsi_v:.1f} / {vol_v:,}</div>
+                            </div>
                         </div>
                         <p style='text-align:center; color:#5c6370; margin:10px 0 0 0; font-size:10px;'>⏱ Session Timer Active | {ist_now.strftime('%H:%M:%S')} IST</p>
                     </div>
                     <script>setTimeout(function(){{ window.location.reload(); }}, {js_reload});</script>"""
-                    components.html(dhan_card, height=450, scrolling=False)
+                    st.components.v1.html(dhan_card, height=450, scrolling=False)
             except: pass
             
-            # THE FIX: अंतर्गत लूप पूर्णपणे थांबवून अधिकृत स्क्रिप्ट रिफ्रेशर ट्रिगर लावला!
             st.caption("🔄 Satellite telemetry operational.")
             if current_time >= m_close or current_time < m_settle: time.sleep(15)
             else: time.sleep(1.5)
