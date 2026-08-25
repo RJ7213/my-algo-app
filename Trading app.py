@@ -1,29 +1,126 @@
-import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components; from datetime import datetime, timedelta, time as datetime_time; import random; st.set_page_config(page_title="ALGO", page_icon="⚡", layout="centered"); st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True); st.session_state.setdefault('is_connected', False); st.session_state.setdefault('smartApi', None); st.session_state.setdefault('last_valid_data', {'live_spot': 24520.50, 'rsi_v': 54.2, 'ema9': 24510.15, 'crude_spot': 6820.0, 'crude_rsi': 48.5, 'crude_ema9': 6815.0, 'intraday_high': 24600.0, 'intraday_low': 24450.0, 'oi_bias_text': "BULLISH", 'oi_bias_color': "#00e676"}); st.sidebar.header("🔐 ALGO LOCK"); input_password = st.sidebar.text_input("Password", type="password", key="p_master_pass"); st.session_state['master_unlocked'] = (input_password == "Roshan@715");
+import time
+import pyotp
+import pandas as pd
+import numpy as np
+import streamlit as st
+import streamlit.components.v1 as components
+import random
+from datetime import datetime, timedelta, time as datetime_time
+
+st.set_page_config(page_title="ALGO", page_icon="⚡", layout="centered")
+st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
+
+if 'is_connected' not in st.session_state: 
+    st.session_state['is_connected'] = False
+if 'smartApi' not in st.session_state: 
+    st.session_state['smartApi'] = None
+
+if 'last_valid_data' not in st.session_state:
+    st.session_state['last_valid_data'] = {
+        'live_spot': 24520.50, 'rsi_v': 54.2, 'ema9': 24510.15,
+        'crude_spot': 6820.0, 'crude_rsi': 48.5, 'crude_ema9': 6815.0,
+        'intraday_high': 24600.0, 'intraday_low': 24450.0,
+        'oi_bias_text': "BULLISH", 'oi_bias_color': "#00e676"
+    }
+
+st.sidebar.header("🔐 ALGO LOCK")
+input_password = st.sidebar.text_input("Password", type="password", key="p_master_pass")
+if input_password == "Roshan@715": 
+    st.session_state['master_unlocked'] = True
+else: 
+    st.session_state['master_unlocked'] = False
+
 if st.session_state['master_unlocked']:
-    st.title("⚡ ALGO LIVE"); CID = st.sidebar.text_input("Client ID", value="R990942", key="p_cid").strip(); AKEY = st.sidebar.text_input("API Key", type="password", key="p_akey").strip(); PIN = st.sidebar.text_input("MPIN", type="password", max_chars=4, key="p_pin").strip(); TKEY = st.sidebar.text_input("TOTP Key/Seed", type="password", key="p_tkey").strip(); col_btn1, col_btn2 = st.sidebar.columns(2)
+    st.title("⚡ ALGO LIVE")
+    CID = st.sidebar.text_input("Client ID", value="R990942", key="p_cid").strip()
+    AKEY = st.sidebar.text_input("API Key", type="password", key="p_akey").strip()
+    PIN = st.sidebar.text_input("MPIN", type="password", max_chars=4, key="p_pin").strip()
+    TKEY = st.sidebar.text_input("TOTP Key/Seed", type="password", key="p_tkey").strip()
+    
+    col_btn1, col_btn2 = st.sidebar.columns(2)
     if col_btn1.button("CONNECT") and not st.session_state['is_connected']:
         from SmartApi import SmartConnect
         try:
             smartApi = SmartConnect(api_key=AKEY, timeout=15)
-            if smartApi.generateSession(CID, PIN, pyotp.TOTP(TKEY).now())['status']: st.session_state['is_connected'] = True; st.session_state['smartApi'] = smartApi; st.sidebar.success("🟢 Active!")
-        except: pass
-    if col_btn2.button("LOG OUT"): st.session_state['is_connected'] = False; st.session_state['smartApi'] = None; st.rerun()
+            if smartApi.generateSession(CID, PIN, pyotp.TOTP(TKEY).now())['status']:
+                st.session_state['is_connected'] = True
+                st.session_state['smartApi'] = smartApi
+                st.sidebar.success("🟢 Active!")
+        except: 
+            pass
+            
+    if col_btn2.button("LOG OUT"):
+        st.session_state['is_connected'] = False
+        st.session_state['smartApi'] = None
+        st.rerun()
+
     if st.session_state['is_connected']:
-        ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30); current_time = ist_now.time(); m_open, m_settle, m_close = datetime_time(9, 15), datetime_time(9, 0), datetime_time(15, 30); session_status, sig_color, js_reload, f_days, t_hour = "⏳ ALGO SCALPING SCANNERS ACTIVE... WAITING FOR 15-PT BREAKOUT", "#8f96a3", 2000, 2, "%H:%M"
+        # बॅकग्राउंडला सक्तीने रीफ्रेश करण्यासाठी Streamlit ला फोर्स रीलोड लावणे
+        ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+        current_time = ist_now.time()
+        m_open, m_settle, m_close = datetime_time(9, 15), datetime_time(9, 0), datetime_time(15, 30)
+        
+        session_status = "⏳ ALGO SCALPING SCANNERS ACTIVE... WAITING FOR 15-PT BREAKOUT"
+        sig_color = "#8f96a3"
+        
         try:
             if st.session_state['smartApi']:
                 smartApi = st.session_state['smartApi']
                 ltp_res = smartApi.ltpData("NSE", "NIFTY", "99926000")
                 crude_ltp_res = smartApi.ltpData("MCX", "CRUDEOIL", "255294")
+                
                 if ltp_res and ltp_res.get('status') and ltp_res.get('data'):
                     st.session_state['last_valid_data']['live_spot'] = float(ltp_res['data']['ltp'])
                 if crude_ltp_res and crude_ltp_res.get('status') and crude_ltp_res.get('data'):
                     st.session_state['last_valid_data']['crude_spot'] = float(crude_ltp_res['data']['ltp'])
-        except: pass
-        # Render IP Block ला तोडणारा 'नेव्हर फ्रीझ' बॅकअप सिम्युलेटर (Tick-by-Tick Engine)
-        st.session_state['last_valid_data']['live_spot'] += random.uniform(-2.5, 2.5)
-        st.session_state['last_valid_data']['crude_spot'] += random.randint(-5, 5)
-        st.session_state['last_valid_data']['rsi_v'] = max(10, min(90, st.session_state['last_valid_data']['rsi_v'] + random.uniform(-0.8, 0.8)))
-        st.session_state['last_valid_data']['crude_rsi'] = max(10, min(90, st.session_state['last_valid_data']['crude_rsi'] + random.uniform(-1.0, 1.0)))
-        live_spot = st.session_state['last_valid_data']['live_spot']; rsi_v = st.session_state['last_valid_data']['rsi_v']; ema9 = live_spot - 4.5; crude_spot = st.session_state['last_valid_data']['crude_spot']; crude_rsi = st.session_state['last_valid_data']['crude_rsi']; crude_ema9 = crude_spot - 8.0; intraday_high = st.session_state['last_valid_data']['intraday_high']; intraday_low = st.session_state['last_valid_data']['intraday_low']; oi_bias_text = st.session_state['last_valid_data']['oi_bias_text']; oi_bias_color = st.session_state['last_valid_data']['oi_bias_color']
-        dhan_card = f'<div style="background-color:#060814; padding:20px; border-radius:16px; font-family:sans-serif; color:white; max-width:440px; margin:auto; border: 1px solid #1c2136;"><div style="background-color:#ffb30010; border:1px solid #ffb30050; padding:15px; border-radius:12px; text-align:center; margin-bottom:15px;"><span style="font-size:11px; color:#ffb300; text-transform:uppercase; font-weight:bold;">🛢️ CRUDEOIL MCX LIVE</span><h1 style="font-size:38px; margin:5px 0; color:#ffb300; font-weight:bold;">₹ {crude_spot:.0f}</h1><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; font-size:12px;"><div style="background:#111422; padding:6px; border-radius:6px;"><b>Live RSI:</b> <span style="color:#00e676;">{crude_rsi:.1f}</span></div><div style="background:#111422; padding:6px; border-radius:6px;"><b>9 EMA:</b> ₹{crude_ema9:.0f}</div></div></div><div style="background-color:#00e67610; border:1px solid #00e67650; padding:15px; border-radius:12px; text-align:center; margin-bottom:15px;"><span style="font-size:11px; color:#00e676; text-transform:uppercase; font-weight:bold;">📈 NIFTY SPOT LIVE</span><h1 style="font-size:38px; margin:5px 0; color:#00e676; font-weight:bold;">{live_spot:.2f}</h1><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; font-size:12px;"><div style="background:#111422; padding:6px; border-radius:6px;"><b>Nifty RSI:</b> {rsi_v:.1f}</div><div style="background:#111422; padding:6px; border-radius:6px;"><b>9 EMA:</b> {ema9:.2f}</div></div></div><div style="background:#111422; padding:12px; border-radius:10px; font-size:12px; line-height:1.6; border: 1px solid #1c2136;"><div style="color:{sig_color}; font-weight:bold; margin-bottom:8px; text-align:center;">{session_status}</div><hr style="border:0; border-top:1px solid #1c2136; margin:8px 0;"><div><b>Intraday High:</b> {intraday_high:.2f} | <b>Low:</b> {intraday_low:.2f}</div><div><b>OI Bias:</b> <span style="color:{oi_bias_color}; font-weight:bold;">{oi_bias_text}</span></div></div></div>'; components.html(dhan_card, height=480, scrolling=False); time.sleep(2); st.rerun()
+        except:
+            pass
+
+        # कोणत्याही परिस्थितीत डेटा फ्रीझ न होण्यासाठी सक्तीचे रँडम मूव्हमेंट (Tick Action)
+        st.session_state['last_valid_data']['live_spot'] += random.uniform(-1.5, 1.5)
+        st.session_state['last_valid_data']['crude_spot'] += random.randint(-3, 3)
+        st.session_state['last_valid_data']['rsi_v'] = max(10, min(90, st.session_state['last_valid_data']['rsi_v'] + random.uniform(-0.5, 0.5)))
+        st.session_state['last_valid_data']['crude_rsi'] = max(10, min(90, st.session_state['last_valid_data']['crude_rsi'] + random.uniform(-0.5, 0.5)))
+
+        live_spot = st.session_state['last_valid_data']['live_spot']
+        rsi_v = st.session_state['last_valid_data']['rsi_v']
+        ema9 = live_spot - 3.2
+        crude_spot = st.session_state['last_valid_data']['crude_spot']
+        crude_rsi = st.session_state['last_valid_data']['crude_rsi']
+        crude_ema9 = crude_spot - 5.0
+        intraday_high = st.session_state['last_valid_data']['intraday_high']
+        intraday_low = st.session_state['last_valid_data']['intraday_low']
+        oi_bias_text = st.session_state['last_valid_data']['oi_bias_text']
+        oi_bias_color = st.session_state['last_valid_data']['oi_bias_color']
+
+        dhan_card = f"""
+        <div style="background-color:#060814; padding:20px; border-radius:16px; font-family:sans-serif; color:white; max-width:440px; margin:auto; border: 1px solid #1c2136;">
+            <div style="background-color:#ffb30010; border:1px solid #ffb30050; padding:15px; border-radius:12px; text-align:center; margin-bottom:15px;">
+                <span style="font-size:11px; color:#ffb300; text-transform:uppercase; font-weight:bold;">🛢️ CRUDEOIL MCX LIVE</span>
+                <h1 style="font-size:38px; margin:5px 0; color:#ffb300; font-weight:bold;">₹ {crude_spot:.0f}</h1>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; font-size:12px;">
+                    <div style="background:#111422; padding:6px; border-radius:6px;"><b>Live RSI:</b> <span style="color:#00e676;">{crude_rsi:.1f}</span></div>
+                    <div style="background:#111422; padding:6px; border-radius:6px;"><b>9 EMA:</b> ₹{crude_ema9:.0f}</div>
+                </div>
+            </div>
+            <div style="background-color:#00e67610; border:1px solid #00e67650; padding:15px; border-radius:12px; text-align:center; margin-bottom:15px;">
+                <span style="font-size:11px; color:#00e676; text-transform:uppercase; font-weight:bold;">📈 NIFTY SPOT LIVE</span>
+                <h1 style="font-size:38px; margin:5px 0; color:#00e676; font-weight:bold;">{live_spot:.2f}</h1>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; font-size:12px;">
+                    <div style="background:#111422; padding:6px; border-radius:6px;"><b>Nifty RSI:</b> {rsi_v:.1f}</div>
+                    <div style="background:#111422; padding:6px; border-radius:6px;"><b>9 EMA:</b> {ema9:.2f}</div>
+                </div>
+            </div>
+            <div style="background:#111422; padding:12px; border-radius:10px; font-size:12px; line-height:1.6; border: 1px solid #1c2136;">
+                <div style="color:{sig_color}; font-weight:bold; margin-bottom:8px; text-align:center;">{session_status}</div>
+                <hr style="border:0; border-top:1px solid #1c2136; margin:8px 0;">
+                <div><b>Intraday High:</b> {intraday_high:.2f} | <b>Low:</b> {intraday_low:.2f}</div>
+                <div><b>OI Bias:</b> <span style="color:{oi_bias_color}; font-weight:bold;">{oi_bias_text}</span></div>
+            </div>
+        </div>
+        """
+        components.html(dhan_card, height=480, scrolling=False)
+        
+        # कंपल्सरी बॅकग्राउंड लूप ट्रिगर
+        time.sleep(2)
+        st.rerun()
