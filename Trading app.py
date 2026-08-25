@@ -6,7 +6,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta, time as datetime_time
 
-st.set_page_config(page_title="ALGO", page_icon="⚡", layout="centered")
+st.set_page_config(page_title="ALGO V66", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
 if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
@@ -30,7 +30,7 @@ if st.session_state['master_unlocked']:
         try:
             smartApi = SmartConnect(api_key=AKEY, timeout=15)
             if smartApi.generateSession(CID, PIN, pyotp.TOTP(TKEY).now())['status']:
-                st.session_state['is_connected'] = True; st.session_state['smartApi'] = smartApi; st.sidebar.success("🟢 Active!")
+                st.session_state['is_connected'] = True; st.session_state['smartApi'] = smartApi; st.sidebar.success("🟢 Connected!")
         except: pass
     if col_btn2.button("LOG OUT"):
         st.session_state['is_connected'] = False; st.session_state['smartApi'] = None; st.rerun()
@@ -42,20 +42,21 @@ if st.session_state['master_unlocked']:
             with dhan_app_canvas.container():
                 try:
                     ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
-                    current_time = ist_now.time()
-                    m_open, m_settle, m_close = datetime_time(9, 15), datetime_time(9, 0), datetime_time(15, 30)
                     
-                    # चार्ट रिअल टाईम फिक्स
+                    # थेट रिअल-टाईम लाईव्ह स्पॉट डेटा (No Lag REST Engine)
                     ltp_res = smartApi.ltpData("NSE", "NIFTY", "99926000")
-                    res = smartApi.getCandleData({"exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE", "fromdate": (ist_now - timedelta(days=2)).strftime("%Y-%m-%d 09:15"), "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
                     crude_ltp_res = smartApi.ltpData("MCX", "CRUDEOIL", "255294")
+                    
+                    # ५ मिनिटांचा हिस्टोरिकल कॅन्डल डेटा केवळ इंडिकेटर मॅचिंगसाठी
+                    res = smartApi.getCandleData({"exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE", "fromdate": (ist_now - timedelta(days=2)).strftime("%Y-%m-%d 09:15"), "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
                     crude_res = smartApi.getCandleData({"exchange": "MCX", "symboltoken": "255294", "interval": "FIVE_MINUTE", "fromdate": (ist_now - timedelta(days=2)).strftime("%Y-%m-%d 09:00"), "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
 
                     if ltp_res and ltp_res.get('status') and res and res.get('data') and crude_ltp_res and crude_ltp_res.get('status') and crude_res and crude_res.get('data'):
                         live_spot = float(ltp_res['data']['ltp'])
-                        df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume']).tail(30).reset_index(drop=True)
+                        crude_spot = float(crude_ltp_res['data']['ltp'])
                         
-                        # चार्टसोबत १००% मॅच होणारे RSI गणित
+                        # चार्टसोबत १००% मॅच होणारे अचूक वाईल्डर आरएसआय (Wilder's RSI 14) गणित
+                        df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
                         df['close'] = df['close'].astype(float)
                         delta = df['close'].diff()
                         gain = (delta.clip(lower=0)).ewm(alpha=1/14, adjust=False).mean()
@@ -66,8 +67,8 @@ if st.session_state['master_unlocked']:
                         df['9_EMA'] = df['close'].ewm(span=9, adjust=False).mean()
                         ema9 = float(df['9_EMA'].iloc[-1])
 
-                        crude_spot = float(crude_ltp_res['data']['ltp'])
-                        c_df = pd.DataFrame(crude_res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume']).tail(30).reset_index(drop=True)
+                        # क्रूड ऑईल इंडिकेटर मॅच फिक्स
+                        c_df = pd.DataFrame(crude_res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
                         c_df['close'] = c_df['close'].astype(float)
                         c_delta = c_df['close'].diff()
                         c_gain = (c_delta.clip(lower=0)).ewm(alpha=1/14, adjust=False).mean()
@@ -78,18 +79,19 @@ if st.session_state['master_unlocked']:
                         c_df['9_EMA'] = c_df['close'].ewm(span=9, adjust=False).mean()
                         crude_ema9 = float(c_df['9_EMA'].iloc[-1])
 
+                        # इंट्राडे स्विंग ब्रेकआऊट रेंज ट्रॅकर (१५-पॉइंट मॅक्रो रुल)
                         current_day_str = ist_now.strftime("%Y-%m-%d")
                         day_candles = df[df['date'].astype(str).str.contains(current_day_str)]
                         intraday_high = day_candles['high'].astype(float).max() if not day_candles.empty else live_spot
                         intraday_low = day_candles['low'].astype(float).min() if not day_candles.empty else live_spot
                         
-                        # ब्रेकआउट फिल्टर फिक्स (आता १५-पॉइंट रुल सर्व सिग्नल्स ओपन करेल)
-                        if live_spot >= (intraday_high - 15):
-                            session_status, sig_color = "🟢 CE BREAKOUT STRATEGY ACTIVATED!", "#00e676"
-                        elif live_spot <= (intraday_low + 15):
-                            session_status, sig_color = "🔴 PE BREAKOUT STRATEGY ACTIVATED!", "#ff5252"
+                        # ब्रेकआऊट ट्रॅप सिग्नल्स
+                        if live_spot >= (intraday_high - 15) and rsi_v > 70:
+                            session_status, sig_color = "🟢 CE BREAKOUT ACTIVATED (GENUINE SWING RIDE)", "#00e676"
+                        elif live_spot <= (intraday_low + 15) and rsi_v < 30:
+                            session_status, sig_color = "🔴 PE BREAKOUT ACTIVATED (OPERATOR WALL CRASH)", "#ff5252"
                         else:
-                            session_status, sig_color = "⏳ WAITING FOR 15-PT BREAKOUT TRAP", "#8f96a3"
+                            session_status, sig_color = "⏳ SCALPING SCANNERS ACTIVE... WAITING FOR 15-PT BREAKOUT", "#8f96a3"
 
                         oi_bias_text, oi_bias_color = "STRONG BULLISH", "#00e676"
 
@@ -121,4 +123,4 @@ if st.session_state['master_unlocked']:
                         """
                         components.html(dhan_card, height=480, scrolling=False)
                 except: pass
-            time.sleep(2)
+            time.sleep(1) # हाय-स्पीड डेटा फेचिंग गती १ सेकंदावर आणली
