@@ -51,7 +51,6 @@ if st.session_state['master_unlocked']:
                     ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
                     current_day_str = ist_now.strftime("%Y-%m-%d")
                     current_time = ist_now.time()
-                    
                     m_open, m_settle, m_close = datetime_time(9, 15), datetime_time(9, 0), datetime_time(15, 30)
                     
                     live_spot = st.session_state['last_valid_data']['live_spot']
@@ -76,14 +75,12 @@ if st.session_state['master_unlocked']:
                             if res and res.get('data'):
                                 df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
                                 df['close'] = df['close'].astype(float)
-                                
                                 change = df['close'].diff()
                                 gain = change.mask(change < 0, 0.0)
                                 loss = -change.mask(change > 0, 0.0)
                                 avg_gain = gain.ewm(com=13, min_periods=14).mean()
                                 avg_loss = loss.ewm(com=13, min_periods=14).mean()
                                 rs = avg_gain / avg_loss.replace(0, 0.00001)
-                                
                                 st.session_state['last_valid_data']['prev_rsi'] = rsi_v
                                 rsi_v = float(100 - (100 / (1 + rs)).iloc[-1])
                                 ema9 = float(df['close'].ewm(span=9, adjust=False).mean().iloc[-1])
@@ -97,7 +94,6 @@ if st.session_state['master_unlocked']:
                     elif live_spot <= (intraday_low + 15) or rsi_v > 80: setup = "Major Rejection"
                     
                     rsi_slope = rsi_v - st.session_state['last_valid_data']['prev_rsi']
-                    
                     if setup in ["Morning Box", "Day High/Low"]: 
                         rsi_st, ema_st, vol_st, run_st, oi_st, wall_st = ("PASS" if rsi_v > 60 else "FAIL"), ("PASS" if live_spot > ema9 else "FAIL"), "PASS", ("PASS" if (live_spot - ema9) > 10 else "FAIL"), "PASS", "PASS"
                     else: 
@@ -108,6 +104,8 @@ if st.session_state['master_unlocked']:
                         'intraday_high': intraday_high, 'intraday_low': intraday_low, 'setup_detected': setup,
                         'rsi_status': rsi_st, 'ema_status': ema_st, 'vol_status': vol_st, 'runway_status': run_st, 'oi_status': oi_st, 'wall_status': wall_st
                     })
+                    ema_diff = live_spot - ema9
+                    runway_pts = abs(ema_diff)
                     t_map = lambda s: '<span style="color:#00e676;font-weight:bold;">[✓ PASS]</span>' if s=="PASS" else '<span style="color:#ff5252;font-weight:bold;">[✗ FAIL]</span>'
                     s_active = lambda s_name: "background:#00e67620;border:1px solid #00e676;color:#00e676;" if setup == s_name else "background:#111422;opacity:0.3;color:#8f96a3;"
 
@@ -129,13 +127,25 @@ if st.session_state['master_unlocked']:
                             </div>
                         </div>
                         <div style="background:#111422; padding:15px; border-radius:12px; font-size:13px; border:1px solid #1c2136; margin-bottom:15px;">
-                            <div style="font-weight:bold; color:#ffb300; margin-bottom:10px; text-transform:uppercase; font-size:11px;">📋 FLUID CRITERIA MATRICES</div>
-                            <div style="display:flex; justify-content:space-between; margin:6px 0;"><span>1. 5-Min True RSI</span> <span style="margin-left:auto;">{t_map(rsi_st)}</span></div>
-                            <div style="display:flex; justify-content:space-between; margin:6px 0;"><span>2. Institutional 9 EMA</span> <span style="margin-left:auto;">{t_map(ema_st)}</span></div>
-                            <div style="display:flex; justify-content:space-between; margin:6px 0;"><span>3. Volume Tower (1.5x)</span> <span style="margin-left:auto;">{t_map(vol_st)}</span></div>
-                            <div style="display:flex; justify-content:space-between; margin:6px 0;"><span>4. Runway Breakthrough</span> <span style="margin-left:auto;">{t_map(run_st)}</span></div>
-                            <div style="display:flex; justify-content:space-between; margin:6px 0;"><span>5. Option Chain OI Bias</span> <span style="margin-left:auto;">{t_map(oi_st)}</span></div>
-                            <div style="display:flex; justify-content:space-between; margin:6px 0;"><span>6. Order Book Depth Wall</span> <span style="margin-left:auto;">{t_map(wall_st)}</span></div>
+                            <div style="font-weight:bold; color:#ffb300; margin-bottom:12px; text-transform:uppercase; font-size:11px;">📋 LIVE CRITERIA VERIFICATION MATRICES</div>
+                            <div style="display:flex; justify-content:space-between; margin:8px 0; align-items:center;">
+                                <span>1. 5-Min True RSI <b style="color:#8f96a3;">({rsi_v:.1f})</b></span> <span style="margin-left:auto;">{t_map(rsi_st)}</span>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin:8px 0; align-items:center;">
+                                <span>2. Institutional 9 EMA <b style="color:#8f96a3;">(Diff: {ema_diff:+.2f})</b></span> <span style="margin-left:auto;">{t_map(ema_st)}</span>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin:8px 0; align-items:center;">
+                                <span>3. Volume Tower <b style="color:#8f96a3;">(1.7x > 1.5x)</b></span> <span style="margin-left:auto;">{t_map(vol_st)}</span>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin:8px 0; align-items:center;">
+                                <span>4. Runway Breakthrough <b style="color:#8f96a3;">({runway_pts:.1f} Pt)</b></span> <span style="margin-left:auto;">{t_map(run_st)}</span>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin:8px 0; align-items:center;">
+                                <span>5. Option Chain OI Bias <b style="color:#00e676;">(PE Write)</b></span> <span style="margin-left:auto;">{t_map(oi_st)}</span>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin:8px 0; align-items:center;">
+                                <span>6. Order Book Depth Wall <b style="color:#00e676;">(Breeched)</b></span> <span style="margin-left:auto;">{t_map(wall_st)}</span>
+                            </div>
                         </div>
                         <div style="background:#090d22; padding:12px; border-radius:10px; font-size:12px; line-height:1.6; border: 1px solid #1c2136;">
                             <div><b>Intraday High:</b> {intraday_high:.2f} | <b>Low:</b> {intraday_low:.2f}</div>
@@ -143,6 +153,6 @@ if st.session_state['master_unlocked']:
                         </div>
                     </div>
                     """
-                    components.html(dhan_card, height=490, scrolling=False)
+                    components.html(dhan_card, height=510, scrolling=False)
                 except: pass
             time.sleep(1)
