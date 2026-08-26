@@ -9,6 +9,12 @@ from datetime import datetime, timedelta, time as datetime_time
 st.set_page_config(page_title="ALGO V66 MASTER", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
+# सतत पासवर्ड टाकण्याची कटकट मिटवण्यासाठी क्रेडेंशियल्स फिक्स केले
+CID = "R990942"
+AKEY = "तुमची_एंजल_वन_API_KEY_इथे_टाका" 
+PIN = "तुमचा_MPIN_इथे_टाका"
+TKEY = "तुमचा_TOTP_SEED_KEY_इथे_टाका"
+
 if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
 if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
 
@@ -18,31 +24,30 @@ if 'last_valid_data' not in st.session_state:
         'crude_spot': 6817.0, 'crude_rsi': 47.9, 'crude_ema9': 6812.0,
         'intraday_high': 24334.55, 'intraday_low': 24128.80,
         'prev_rsi': 88.00, 'setup_detected': "Day High/Low",
-        'rsi_status': "PASS", 'ema_status': "PASS", 'vol_status': "PASS",
-        'runway_status': "PASS", 'oi_status': "PASS", 'wall_status': "PASS"
+        'rsi_status': "FAIL", 'ema_status': "FAIL", 'vol_status': "FAIL",
+        'runway_status': "FAIL", 'oi_status': "FAIL", 'wall_status': "FAIL"
     }
-st.sidebar.header("🔐 ALGO LOCK")
-input_password = st.sidebar.text_input("Password", type="password", key="p_master_pass")
-if input_password == "Roshan@715": st.session_state['master_unlocked'] = True
-else: st.session_state['master_unlocked'] = False
+st.title("⚡ ALGO LIVE")
+st.sidebar.header("🔐 ALGO AUTOLOGIN")
 
-if st.session_state['master_unlocked']:
-    st.title("⚡ ALGO LIVE")
-    CID = st.sidebar.text_input("Client ID", value="R990942", key="p_cid").strip()
-    AKEY = st.sidebar.text_input("API Key", type="password", key="p_akey").strip()
-    PIN = st.sidebar.text_input("MPIN", type="password", max_chars=4, key="p_pin").strip()
-    TKEY = st.sidebar.text_input("TOTP Key/Seed", type="password", key="p_tkey").strip()
-    
-    col_btn1, col_btn2 = st.sidebar.columns(2)
-    if col_btn1.button("CONNECT") and not st.session_state['is_connected']:
+# क्रेडेंशियल्स सुरक्षित रित्या बॅकग्राउंडला ऑटो-लोड करणे
+if not st.session_state['is_connected']:
+    if st.sidebar.button("START ALGO ENGINE"):
         from SmartApi import SmartConnect
         try:
             smartApi = SmartConnect(api_key=AKEY, timeout=15)
             if smartApi.generateSession(CID, PIN, pyotp.TOTP(TKEY).now())['status']:
-                st.session_state['is_connected'] = True; st.session_state['smartApi'] = smartApi; st.sidebar.success("🟢 Connected!")
-        except: pass
-    if col_btn2.button("LOG OUT"):
-        st.session_state['is_connected'] = False; st.session_state['smartApi'] = None; st.rerun()
+                st.session_state['is_connected'] = True
+                st.session_state['smartApi'] = smartApi
+                st.sidebar.success("🟢 System Active!")
+        except Exception as e:
+            st.sidebar.error(f"Login Failed: {str(e)}")
+else:
+    st.sidebar.success("🟢 Algo Engine Running Smoothly")
+    if st.sidebar.button("STOP ENGINE"):
+        st.session_state['is_connected'] = False
+        st.session_state['smartApi'] = None
+        st.rerun()
     dhan_app_canvas = st.empty()
     if st.session_state['is_connected']:
         while True:
@@ -53,6 +58,10 @@ if st.session_state['master_unlocked']:
                     current_time = ist_now.time()
                     m_open, m_settle, m_close = datetime_time(9, 15), datetime_time(9, 0), datetime_time(15, 30)
                     
+                    is_weekend = ist_now.weekday() in [5, 6]
+                    # मार्केट अवर्सची कडक पडताळणी (सकाळी ९:१५ ते दुपारी ३:३०)
+                    is_market_live = (not is_weekend) and (m_open <= current_time <= m_close)
+                    
                     live_spot = st.session_state['last_valid_data']['live_spot']
                     rsi_v = st.session_state['last_valid_data']['rsi_v']
                     ema9 = st.session_state['last_valid_data']['ema9']
@@ -62,7 +71,7 @@ if st.session_state['master_unlocked']:
                     intraday_high = st.session_state['last_valid_data']['intraday_high']
                     intraday_low = st.session_state['last_valid_data']['intraday_low']
 
-                    if st.session_state['smartApi'] and (m_settle <= current_time <= m_close):
+                    if st.session_state['smartApi'] and is_market_live:
                         try:
                             smartApi = st.session_state['smartApi']
                             ltp_res = smartApi.ltpData("NSE", "NIFTY", "99926000")
@@ -94,10 +103,15 @@ if st.session_state['master_unlocked']:
                     elif live_spot <= (intraday_low + 15) or rsi_v > 80: setup = "Major Rejection"
                     
                     rsi_slope = rsi_v - st.session_state['last_valid_data']['prev_rsi']
-                    if setup in ["Morning Box", "Day High/Low"]: 
-                        rsi_st, ema_st, vol_st, run_st, oi_st, wall_st = ("PASS" if rsi_v > 60 else "FAIL"), ("PASS" if live_spot > ema9 else "FAIL"), "PASS", ("PASS" if (live_spot - ema9) > 10 else "FAIL"), "PASS", "PASS"
-                    else: 
-                        rsi_st, ema_st, vol_st, run_st, oi_st, wall_st = ("PASS" if (rsi_slope < -1.0 or rsi_v < 45) else "FAIL"), ("PASS" if live_spot < ema9 else "FAIL"), "PASS", ("PASS" if (ema9 - live_spot) > 10 else "FAIL"), "PASS", "PASS"
+                    
+                    # जर मार्केट लाईव्ह असेल तरच पास/फेल चेक करणे, नाहीतर सक्तीने FAIL लॉकिंग (Anti-Trap System)
+                    if is_market_live:
+                        if setup in ["Morning Box", "Day High/Low"]: 
+                            rsi_st, ema_st, vol_st, run_st, oi_st, wall_st = ("PASS" if rsi_v > 60 else "FAIL"), ("PASS" if live_spot > ema9 else "FAIL"), "PASS", ("PASS" if (live_spot - ema9) > 10 else "FAIL"), "PASS", "PASS"
+                        else: 
+                            rsi_st, ema_st, vol_st, run_st, oi_st, wall_st = ("PASS" if (rsi_slope < -1.0 or rsi_v < 45) else "FAIL"), ("PASS" if live_spot < ema9 else "FAIL"), "PASS", ("PASS" if (ema9 - live_spot) > 10 else "FAIL"), "PASS", "PASS"
+                    else:
+                        rsi_st = ema_st = vol_st = run_st = oi_st = wall_st = "FAIL"
 
                     st.session_state['last_valid_data'].update({
                         'live_spot': live_spot, 'rsi_v': rsi_v, 'ema9': ema9, 'crude_spot': crude_spot,
@@ -109,8 +123,14 @@ if st.session_state['master_unlocked']:
                     sim_sl = live_spot - 40 if setup in ["Morning Box", "Day High/Low"] else live_spot + 40
                     sim_tgt = live_spot + 80 if setup in ["Morning Box", "Day High/Low"] else live_spot - 80
                     
-                    t_map = lambda s: '<span style="color:#00e676;font-weight:bold;">[✓ PASS]</span>' if s=="PASS" else '<span style="color:#ff5252;font-weight:bold;">[✗ FAIL]</span>'
+                    t_map = lambda s: '<span style="color:#00e676;font-weight:bold;">[✓ PASS]</span>' if s=="PASS" else '<span style="color:#ff5252;font-weight:bold;">[💡 LOCK - NO TRADE]</span>'
                     s_active = lambda s_name: "background:#00e67620;border:1px solid #00e676;color:#00e676;" if setup == s_name else "background:#111422;opacity:0.3;color:#8f96a3;"
+                    
+                    # मार्केट बंद असताना टार्गेट मार्कर ब्लॉक करणे
+                    plot_engine_title = "🎯 TRADING VIEW LIVE PLOT ENGINE" if is_market_live else "🔒 ENGINE LOCKED (MARKET HOURS ONLY)"
+                    line_color_entry = "#2196f3" if is_market_live else "#8f96a3"
+                    line_color_tgt = "#00e676" if is_market_live else "#8f96a3"
+                    line_color_sl = "#ff5252" if is_market_live else "#8f96a3"
 
                     dhan_card = f"""
                     <div style="background-color:#060814; padding:20px; border-radius:16px; font-family:sans-serif; color:white; max-width:440px; margin:auto; border: 1px solid #1c2136;">
@@ -151,10 +171,10 @@ if st.session_state['master_unlocked']:
                             </div>
                         </div>
                         <div style="background:#111422; padding:12px; border-radius:12px; font-size:12px; border:1px solid #1c2136; margin-bottom:15px; line-height:1.6;">
-                            <div style="font-weight:bold; color:#ffb300; font-size:11px; margin-bottom:5px;">🎯 TRADING VIEW LIVE PLOT ENGINE</div>
-                            <div style="color:#2196f3;"><b>🔵 Entry Execution Line:</b> ₹ {live_spot:.2f}</div>
-                            <div style="color:#00e676;"><b>🟢 Predicted Target Line:</b> ₹ {sim_tgt:.2f}</div>
-                            <div style="color:#ff5252;"><b>🔴 Calculated Stop-Loss Bounds:</b> ₹ {sim_sl:.2f}</div>
+                            <div style="font-weight:bold; color:#ffb300; font-size:11px; margin-bottom:5px;">{plot_engine_title}</div>
+                            <div style="color:{line_color_entry};"><b>🔵 Entry Execution Line:</b> {"₹ " + str(round(live_spot,2)) if is_market_live else "WAITING FOR OPEN"}</div>
+                            <div style="color:{line_color_tgt};"><b>🟢 Predicted Target Line:</b> {"₹ " + str(round(sim_tgt,2)) if is_market_live else "WAITING FOR OPEN"}</div>
+                            <div style="color:{line_color_sl};"><b>🔴 Calculated Stop-Loss Bounds:</b> {"₹ " + str(round(sim_sl,2)) if is_market_live else "WAITING FOR OPEN"}</div>
                         </div>
                         <div style="height:220px; width:100%; border-radius:10px; overflow:hidden; border:1px solid #1c2136;">
                             <iframe src="https://tradingview.com" style="width:100%; height:100%; border:none; margin:0; padding:0;"></iframe>
