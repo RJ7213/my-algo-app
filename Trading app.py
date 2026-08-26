@@ -9,11 +9,24 @@ from datetime import datetime, timedelta, time as datetime_time
 st.set_page_config(page_title="ALGO V66 MASTER", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
-# 🔐 क्रेडेंशियल्स बँक (इथे तुमचे खरे इंग्रजी आकडे आणि की टाका)
+# 🔐 क्रेडेंशियल्स बँक (इथे तुमचे इंग्रजी आकडे आणि खरी की टाका)
 CID = "R990942"
 AKEY = "c75cUJga"  
 PIN = "8547"               
-TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E" st.title("⚡ ALGO LIVE")
+TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E" 
+
+if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
+if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
+
+if 'last_valid_data' not in st.session_state:
+    st.session_state['last_valid_data'] = {
+        'live_spot': 24274.30, 'rsi_v': 40.05, 'ema9': 24260.30,
+        'crude_spot': 6817.0, 'crude_rsi': 47.9, 'crude_ema9': 6812.0,
+        'intraday_high': 24334.55, 'intraday_low': 24115.45,
+        'prev_rsi': 41.00, 'setup_detected': "Pullback",
+        'rsi_status': "FAIL", 'ema_status': "FAIL", 'vol_status': "FAIL",
+        'runway_status': "FAIL", 'oi_status': "FAIL", 'wall_status': "FAIL"
+    }
 st.sidebar.header("🔐 ALGO AUTOLOGIN")
 
 if not st.session_state['is_connected']:
