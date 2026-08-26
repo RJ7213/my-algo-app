@@ -9,11 +9,11 @@ from datetime import datetime, timedelta, time as datetime_time
 st.set_page_config(page_title="ALGO V66 MASTER", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
-# सतत पासवर्ड टाकण्याची कटकट मिटवण्यासाठी क्रेडेंशियल्स फिक्स केले
+# कडक फिक्स: मराठी अक्षरे काढून फक्त शुद्ध इंग्रजी क्रेडेंशियल्स ठेवले
 CID = "R990942"
-AKEY = "तुमची_एंजल_वन_API_KEY_इथे_टाका" 
-PIN = "तुमचा_MPIN_इथे_टाका"
-TKEY = "तुमचा_TOTP_SEED_KEY_इथे_टाका"
+AKEY = "c75cUJga"  # इथे तुमची खरी एंजल वन एपीआय की टाका
+PIN = "8547"               # इथे तुमचा ४ अंकी एमपिन टाका
+TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E"     # इथे तुमचा टोकन सीड की टाका
 
 if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
 if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
@@ -27,6 +27,7 @@ if 'last_valid_data' not in st.session_state:
         'rsi_status': "FAIL", 'ema_status': "FAIL", 'vol_status': "FAIL",
         'runway_status': "FAIL", 'oi_status': "FAIL", 'wall_status': "FAIL"
     }
+
 st.title("⚡ ALGO LIVE")
 st.sidebar.header("🔐 ALGO AUTOLOGIN")
 
