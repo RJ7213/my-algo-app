@@ -9,11 +9,11 @@ from datetime import datetime, timedelta, time as datetime_time
 st.set_page_config(page_title="ALGO V66 MASTER", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
-# कडक फिक्स: मराठी अक्षरे काढून फक्त शुद्ध इंग्रजी क्रेडेंशियल्स ठेवले
+# 🔐 क्रेडेंशियल्स परमनंट लॉक (इथे तुमचे इंग्रजी आकडे आणि खरी की टाका)
 CID = "R990942"
-AKEY = "c75cUJga"  # इथे तुमची खरी एंजल वन एपीआय की टाका
-PIN = "8547"               # इथे तुमचा ४ अंकी एमपिन टाका
-TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E"     # इथे तुमचा टोकन सीड की टाका
+AKEY = "YOUR_ANGEL_ONE_API_KEY"  
+PIN = "YOUR_MPIN"               
+TKEY = "YOUR_TOTP_SEED_KEY"     
 
 if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
 if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
@@ -27,28 +27,6 @@ if 'last_valid_data' not in st.session_state:
         'rsi_status': "FAIL", 'ema_status': "FAIL", 'vol_status': "FAIL",
         'runway_status': "FAIL", 'oi_status': "FAIL", 'wall_status': "FAIL"
     }
-
-st.title("⚡ ALGO LIVE")
-st.sidebar.header("🔐 ALGO AUTOLOGIN")
-
-# क्रेडेंशियल्स सुरक्षित रित्या बॅकग्राउंडला ऑटो-लोड करणे
-if not st.session_state['is_connected']:
-    if st.sidebar.button("START ALGO ENGINE"):
-        from SmartApi import SmartConnect
-        try:
-            smartApi = SmartConnect(api_key=AKEY, timeout=15)
-            if smartApi.generateSession(CID, PIN, pyotp.TOTP(TKEY).now())['status']:
-                st.session_state['is_connected'] = True
-                st.session_state['smartApi'] = smartApi
-                st.sidebar.success("🟢 System Active!")
-        except Exception as e:
-            st.sidebar.error(f"Login Failed: {str(e)}")
-else:
-    st.sidebar.success("🟢 Algo Engine Running Smoothly")
-    if st.sidebar.button("STOP ENGINE"):
-        st.session_state['is_connected'] = False
-        st.session_state['smartApi'] = None
-        st.rerun()
     dhan_app_canvas = st.empty()
     if st.session_state['is_connected']:
         while True:
@@ -60,7 +38,6 @@ else:
                     m_open, m_settle, m_close = datetime_time(9, 15), datetime_time(9, 0), datetime_time(15, 30)
                     
                     is_weekend = ist_now.weekday() in [5, 6]
-                    # मार्केट अवर्सची कडक पडताळणी (सकाळी ९:१५ ते दुपारी ३:३०)
                     is_market_live = (not is_weekend) and (m_open <= current_time <= m_close)
                     
                     live_spot = st.session_state['last_valid_data']['live_spot']
@@ -105,7 +82,6 @@ else:
                     
                     rsi_slope = rsi_v - st.session_state['last_valid_data']['prev_rsi']
                     
-                    # जर मार्केट लाईव्ह असेल तरच पास/फेल चेक करणे, नाहीतर सक्तीने FAIL लॉकिंग (Anti-Trap System)
                     if is_market_live:
                         if setup in ["Morning Box", "Day High/Low"]: 
                             rsi_st, ema_st, vol_st, run_st, oi_st, wall_st = ("PASS" if rsi_v > 60 else "FAIL"), ("PASS" if live_spot > ema9 else "FAIL"), "PASS", ("PASS" if (live_spot - ema9) > 10 else "FAIL"), "PASS", "PASS"
@@ -127,7 +103,6 @@ else:
                     t_map = lambda s: '<span style="color:#00e676;font-weight:bold;">[✓ PASS]</span>' if s=="PASS" else '<span style="color:#ff5252;font-weight:bold;">[💡 LOCK - NO TRADE]</span>'
                     s_active = lambda s_name: "background:#00e67620;border:1px solid #00e676;color:#00e676;" if setup == s_name else "background:#111422;opacity:0.3;color:#8f96a3;"
                     
-                    # मार्केट बंद असताना टार्गेट मार्कर ब्लॉक करणे
                     plot_engine_title = "🎯 TRADING VIEW LIVE PLOT ENGINE" if is_market_live else "🔒 ENGINE LOCKED (MARKET HOURS ONLY)"
                     line_color_entry = "#2196f3" if is_market_live else "#8f96a3"
                     line_color_tgt = "#00e676" if is_market_live else "#8f96a3"
