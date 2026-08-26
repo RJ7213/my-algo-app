@@ -13,7 +13,7 @@ st.markdown("<style>.main .block-container { padding: 1rem !important; max-width
 CID = "R990942"
 AKEY = "c75cUJga"  
 PIN = "8547"               
-TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E" # तुमची २6 अंकी की इथे स्पेस न ठेवता टाका
+TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E" 
 
 if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
 if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
