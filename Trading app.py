@@ -27,6 +27,26 @@ if 'last_valid_data' not in st.session_state:
         'rsi_status': "FAIL", 'ema_status': "FAIL", 'vol_status': "FAIL",
         'runway_status': "FAIL", 'oi_status': "FAIL", 'wall_status': "FAIL"
     }
+st.title("⚡ ALGO LIVE")
+st.sidebar.header("🔐 ALGO AUTOLOGIN")
+
+if not st.session_state['is_connected']:
+    if st.sidebar.button("START ALGO ENGINE"):
+        from SmartApi import SmartConnect
+        try:
+            smartApi = SmartConnect(api_key=AKEY, timeout=15)
+            if smartApi.generateSession(CID, PIN, pyotp.TOTP(TKEY).now())['status']:
+                st.session_state['is_connected'] = True
+                st.session_state['smartApi'] = smartApi
+                st.sidebar.success("🟢 System Active!")
+        except Exception as e:
+            st.sidebar.error(f"Login Failed: {str(e)}")
+else:
+    st.sidebar.success("🟢 Algo Engine Running Smoothly")
+    if st.sidebar.button("STOP ENGINE"):
+        st.session_state['is_connected'] = False
+        st.session_state['smartApi'] = None
+        st.rerun()
     dhan_app_canvas = st.empty()
     if st.session_state['is_connected']:
         while True:
@@ -37,6 +57,7 @@ if 'last_valid_data' not in st.session_state:
                     current_time = ist_now.time()
                     m_open, m_settle, m_close = datetime_time(9, 15), datetime_time(9, 0), datetime_time(15, 30)
                     
+                    # कडक सिंटॅक्स फिक्स: आता एरर न येता शनिवार (५) आणि रविवार (६) परफेक्ट ट्रॅक होईल
                     is_weekend = ist_now.weekday() in [5, 6]
                     is_market_live = (not is_weekend) and (m_open <= current_time <= m_close)
                     
