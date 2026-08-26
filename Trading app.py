@@ -12,7 +12,7 @@ st.markdown("<style>.main .block-container { padding: 1rem !important; max-width
 
 # 🔐 क्रेडेंशियल्स मेमरी
 CID = "R990942"
-AKEY = "c75cUJga"  
+  
 PIN = "8547"               
 TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E" 
 
