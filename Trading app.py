@@ -46,7 +46,7 @@ else:
         st.session_state['is_connected'] = False
         st.session_state['smartApi'] = None
         st.rerun()
-    dhan_app_canvas = st.empty()
+        dhan_app_canvas = st.empty()
     if st.session_state['is_connected']:
         while True:
             with dhan_app_canvas.container():
@@ -56,7 +56,6 @@ else:
                     current_time = ist_now.time()
                     m_open, m_settle, m_close = datetime_time(9, 15), datetime_time(9, 0), datetime_time(15, 30)
                     
-                    # 🛠️ एरर देणारा 'in' काढून थेट '>= 5' चा कडक सिंटॅक्स फिक्स लावला
                     is_weekend = (ist_now.weekday() >= 5)
                     is_market_live = (not is_weekend) and (m_open <= current_time <= m_close)
                     
@@ -179,4 +178,5 @@ else:
                     """
                     components.html(dhan_card, height=780, scrolling=False)
                 except: pass
-            time.sleep(1)
+            time.sleep(3)  # डेटा फेचिंग टाईम ३ सेकंदावर सेट केला (Network Speed Fix)
+            st.rerun()
