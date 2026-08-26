@@ -11,9 +11,9 @@ st.markdown("<style>.main .block-container { padding: 1rem !important; max-width
 
 # 🔐 क्रेडेंशियल्स परमनंट लॉक (इथे तुमचे इंग्रजी आकडे आणि खरी की टाका)
 CID = "R990942"
-AKEY = "YOUR_ANGEL_ONE_API_KEY"  
-PIN = "YOUR_MPIN"               
-TKEY = "YOUR_TOTP_SEED_KEY"     
+AKEY = "c75cUJga"  
+PIN = "8547"               
+TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E"     
 
 if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
 if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
