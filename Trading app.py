@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, time as datetime_time
 st.set_page_config(page_title="ALGO V66 MASTER", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
-# 🔐 क्रेडेंशियल्स परमनंट लॉक (इथे तुमचे इंग्रजी आकडे आणि खरी की टाका)
 CID = "R990942"
 AKEY = "c75cUJga"  
 PIN = "8547"               
@@ -57,8 +56,8 @@ else:
                     current_time = ist_now.time()
                     m_open, m_settle, m_close = datetime_time(9, 15), datetime_time(9, 0), datetime_time(15, 30)
                     
-                    # कडक सिंटॅक्स फिक्स: आता एरर न येता शनिवार (५) आणि रविवार (६) परफेक्ट ट्रॅक होईल
-                    is_weekend = ist_now.weekday() in [5, 6]
+                    # 🛠️ एरर देणारा 'in' काढून थेट '>= 5' चा कडक सिंटॅक्स फिक्स लावला
+                    is_weekend = (ist_now.weekday() >= 5)
                     is_market_live = (not is_weekend) and (m_open <= current_time <= m_close)
                     
                     live_spot = st.session_state['last_valid_data']['live_spot']
