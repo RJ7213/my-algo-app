@@ -1,14 +1,49 @@
-import time, pyotp, pandas as pd, numpy as np, streamlit as st, streamlit.components.v1 as components
+import time
+import pyotp
+import pandas as pd
+import numpy as np
+import streamlit as st
+import streamlit.components.v1 as components
 from datetime import datetime, timedelta, time as datetime_time
 
 st.set_page_config(page_title="ALGO V66 MASTER", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
-# 🔐 क्रेडेंशियल्स परमनंट लॉक (इथे तुमचे इंग्रजी आकडे आणि खरी की टाका)
+# 🔐 क्रेडेंशियल्स बँक (इथे तुमचे खरे इंग्रजी आकडे आणि की टाका)
 CID = "R990942"
 AKEY = "c75cUJga"  
 PIN = "8547"               
-TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E"     
+TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E" st.title("⚡ ALGO LIVE")
+st.sidebar.header("🔐 ALGO AUTOLOGIN")
+
+if not st.session_state['is_connected']:
+    if st.sidebar.button("START ALGO ENGINE"):
+        from SmartApi import SmartConnect
+        try:
+            smartApi = SmartConnect(api_key=AKEY, timeout=15)
+            
+            # २६ अंकी की मधील स्पेसेस काढणे आणि मोठ्या अक्षरात बदलणे
+            clean_tkey = TKEY.replace(" ", "").strip().upper()
+            
+            # 🛠️ २६-डिजिट विशेष फिक्स: बेस-३२ साठी ऑटोमॅटिक पॅडिंग लावून एरर संपवला
+            missing_padding = len(clean_tkey) % 8
+            if missing_padding != 0:
+                clean_tkey += '=' * (8 - missing_padding)
+            
+            totp_token = pyotp.TOTP(clean_tkey).now()
+            
+            if smartApi.generateSession(CID, PIN, totp_token)['status']:
+                st.session_state['is_connected'] = True
+                st.session_state['smartApi'] = smartApi
+                st.sidebar.success("🟢 System Active!")
+        except Exception as e: 
+            st.sidebar.error(f"Login Failed: {str(e)}")
+else:
+    st.sidebar.success("🟢 Algo Engine Running Smoothly")
+    if st.sidebar.button("STOP ENGINE"):
+        st.session_state['is_connected'] = False
+        st.session_state['smartApi'] = None; st.rerun()
+ # तुमची २६ अंकी की इथे टाका
 
 if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
 if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
@@ -22,23 +57,6 @@ if 'last_valid_data' not in st.session_state:
         'rsi_status': "FAIL", 'ema_status': "FAIL", 'vol_status': "FAIL",
         'runway_status': "FAIL", 'oi_status': "FAIL", 'wall_status': "FAIL"
     }
-
-st.title("⚡ ALGO LIVE")
-st.sidebar.header("🔐 ALGO AUTOLOGIN")
-
-if not st.session_state['is_connected']:
-    if st.sidebar.button("START ALGO ENGINE"):
-        from SmartApi import SmartConnect
-        try:
-            smartApi = SmartConnect(api_key=AKEY, timeout=15)
-            if smartApi.generateSession(CID, PIN, pyotp.TOTP(TKEY).now())['status']:
-                st.session_state['is_connected'] = True; st.session_state['smartApi'] = smartApi
-                st.sidebar.success("🟢 System Active!")
-        except Exception as e: st.sidebar.error(f"Login Failed: {str(e)}")
-else:
-    st.sidebar.success("🟢 Algo Engine Running Smoothly")
-    if st.sidebar.button("STOP ENGINE"):
-        st.session_state['is_connected'] = False; st.session_state['smartApi'] = None; st.rerun()
 dhan_app_canvas = st.empty()
 if st.session_state['is_connected']:
     while True:
