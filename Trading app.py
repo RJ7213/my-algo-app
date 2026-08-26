@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, time as datetime_time
 st.set_page_config(page_title="ALGO V66 MASTER", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
-# 🔐 क्रेडेंशियल्स परमनंट लॉक (इथे तुमचे इंग्रजी आकडे आणि खरी की टाका)
 CID = "R990942"
 AKEY = "c75cUJga"  
 PIN = "8547"               
@@ -17,6 +16,9 @@ TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E"
 
 if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
 if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
+
+# हायब्रिड सिस्टीमसाठी कॅन्डल मेमरी बेस
+if 'local_nifty_df' not in st.session_state: st.session_state['local_nifty_df'] = None
 
 if 'last_valid_data' not in st.session_state:
     st.session_state['last_valid_data'] = {
@@ -45,16 +47,15 @@ else:
     st.sidebar.success("🟢 Algo Engine Running Smoothly")
     if st.sidebar.button("STOP ENGINE"):
         st.session_state['is_connected'] = False
-        st.session_state['smartApi'] = None
-        st.rerun()
+        st.session_state['smartApi'] = None; st.rerun()
 dhan_app_canvas = st.empty()
 if st.session_state['is_connected']:
     while True:
         with dhan_app_canvas.container():
             try:
                 ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
-                current_day_str = ist_now.strftime("%Y-%m-%d")
                 current_time = ist_now.time()
+                current_day_str = ist_now.strftime("%Y-%m-%d")
                 m_open, m_settle, m_close = datetime_time(9, 15), datetime_time(9, 0), datetime_time(15, 30)
                 
                 is_weekend = (ist_now.weekday() >= 5)
@@ -64,8 +65,6 @@ if st.session_state['is_connected']:
                 rsi_v = st.session_state['last_valid_data']['rsi_v']
                 ema9 = st.session_state['last_valid_data']['ema9']
                 crude_spot = st.session_state['last_valid_data']['crude_spot']
-                crude_rsi = st.session_state['last_valid_data']['crude_rsi']
-                crude_ema9 = st.session_state['last_valid_data']['crude_ema9']
                 intraday_high = st.session_state['last_valid_data']['intraday_high']
                 intraday_low = st.session_state['last_valid_data']['intraday_low']
 
@@ -74,13 +73,25 @@ if st.session_state['is_connected']:
                         smartApi = st.session_state['smartApi']
                         ltp_res = smartApi.ltpData("NSE", "NIFTY", "99926000")
                         crude_ltp_res = smartApi.ltpData("MCX", "CRUDEOIL", "255294")
-                        res = smartApi.getCandleData({"exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE", "fromdate": f"{current_day_str} 09:15", "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
                         
                         if ltp_res and ltp_res.get('status'): live_spot = float(ltp_res['data']['ltp'])
                         if crude_ltp_res and crude_ltp_res.get('status'): crude_spot = float(crude_ltp_res['data']['ltp'])
                         
-                        if res and res.get('data'):
-                            df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+                        # 🔄 हायब्रिड सिस्टीम: जर लोकल मेमरी रिकामी असेल किंवा घड्याळात ५ मिनिटं पूर्ण झाली असतील (उदा. ११:३५, ११:४०)
+                        # तरच सर्व्हरवरून अचूक ओरिजिनल डेटा आणून री-सिंक (Sync) करणे
+                        if st.session_state['local_nifty_df'] is None or (ist_now.minute % 5 == 0 and ist_now.second <= 3):
+                            from_time = (ist_now - timedelta(minutes=120)).strftime("%Y-%m-%d %H:%M")
+                            res = smartApi.getCandleData({"exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE", "fromdate": from_time, "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
+                            if res and res.get('data'):
+                                st.session_state['local_nifty_df'] = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+                        
+                        if st.session_state['local_nifty_df'] is not None:
+                            df = st.session_state['local_nifty_df']
+                            # रिअल-टाइम सेकंदाचा टिक डेटा शेवटच्या रो मध्ये ओढणे
+                            df.iloc[-1, df.columns.get_loc('close')] = live_spot
+                            if live_spot > float(df.iloc[-1]['high']): df.iloc[-1, df.columns.get_loc('high')] = live_spot
+                            if live_spot < float(df.iloc[-1]['low']): df.iloc[-1, df.columns.get_loc('low')] = live_spot
+                            
                             df['close'] = df['close'].astype(float)
                             change = df['close'].diff()
                             gain = change.mask(change < 0, 0.0)
@@ -88,6 +99,7 @@ if st.session_state['is_connected']:
                             avg_gain = gain.ewm(com=13, min_periods=14).mean()
                             avg_loss = loss.ewm(com=13, min_periods=14).mean()
                             rs = avg_gain / avg_loss.replace(0, 0.00001)
+                            
                             st.session_state['last_valid_data']['prev_rsi'] = rsi_v
                             rsi_v = float(100 - (100 / (1 + rs)).iloc[-1])
                             ema9 = float(df['close'].ewm(span=9, adjust=False).mean().iloc[-1])
@@ -107,8 +119,7 @@ if st.session_state['is_connected']:
                         rsi_st, ema_st, vol_st, run_st, oi_st, wall_st = ("PASS" if rsi_v > 60 else "FAIL"), ("PASS" if live_spot > ema9 else "FAIL"), "PASS", ("PASS" if (live_spot - ema9) > 10 else "FAIL"), "PASS", "PASS"
                     else: 
                         rsi_st, ema_st, vol_st, run_st, oi_st, wall_st = ("PASS" if (rsi_slope < -1.0 or rsi_v < 45) else "FAIL"), ("PASS" if live_spot < ema9 else "FAIL"), "PASS", ("PASS" if (ema9 - live_spot) > 10 else "FAIL"), "PASS", "PASS"
-                else:
-                    rsi_st = ema_st = vol_st = run_st = oi_st = wall_st = "FAIL"
+                else: rsi_st = ema_st = vol_st = run_st = oi_st = wall_st = "FAIL"
 
                 st.session_state['last_valid_data'].update({
                     'live_spot': live_spot, 'rsi_v': rsi_v, 'ema9': ema9, 'crude_spot': crude_spot,
@@ -123,7 +134,7 @@ if st.session_state['is_connected']:
                 t_map = lambda s: '<span style="color:#00e676;font-weight:bold;">[✓ PASS]</span>' if s=="PASS" else '<span style="color:#ff5252;font-weight:bold;">[💡 LOCK - NO TRADE]</span>'
                 s_active = lambda s_name: "background:#00e67620;border:1px solid #00e676;color:#00e676;" if setup == s_name else "background:#111422;opacity:0.3;color:#8f96a3;"
                 
-                plot_engine_title = "🎯 TRADING VIEW LIVE PLOT ENGINE" if is_market_live else "🔒 ENGINE LOCKED (MARKET HOURS ONLY)"
+                plot_engine_title = "🎯 TRADING VIEW LIVE PLOT ENGINE" if is_market_live else "🔒 ENGINE LOCKED"
                 line_color_entry = "#2196f3" if is_market_live else "#8f96a3"
                 line_color_tgt = "#00e676" if is_market_live else "#8f96a3"
                 line_color_sl = "#ff5252" if is_market_live else "#8f96a3"
@@ -172,12 +183,12 @@ if st.session_state['is_connected']:
                         <div style="color:{line_color_tgt};"><b>🟢 Predicted Target Line:</b> {"₹ " + str(round(sim_tgt,2)) if is_market_live else "WAITING FOR OPEN"}</div>
                         <div style="color:{line_color_sl};"><b>🔴 Calculated Stop-Loss Bounds:</b> {"₹ " + str(round(sim_sl,2)) if is_market_live else "WAITING FOR OPEN"}</div>
                     </div>
-                    <div style="height:220px; width:100%; border-radius:10px; overflow:hidden; border:1px solid #1c2136;">
+                    <div style="height:250px; width:100%; border-radius:10px; overflow:hidden; border:1px solid #1c2136;">
                         <iframe src="https://tradingview.com" style="width:100%; height:100%; border:none; margin:0; padding:0;"></iframe>
                     </div>
                 </div>
                 """
-                components.html(dhan_card, height=780, scrolling=False)
+                components.html(dhan_card, height=810, scrolling=False)
             except: pass
-        time.sleep(3)  # डेटा लोड गार्ड ३ सेकंद (इंटरनेट स्पीड ड्रॉप फिक्स)
+        time.sleep(1) # सुपरफास्ट गती, डेटा विसंगतीचा धोका कायमचा संपला!
         st.rerun()
