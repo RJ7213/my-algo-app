@@ -7,21 +7,21 @@ import streamlit.components.v1 as components
 from datetime import datetime, timedelta, time as datetime_time
 
 # 💻 पेज सेटिंग्स
-st.set_page_config(page_title="RENDER PINPOINT ALGO", page_icon="⚡", layout="centered")
+st.set_page_config(page_title="DEBUG ALGO LIVE", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
-# 🔐 क्रेडेंशियल्स मेमरी
+# 🔐 क्रेडेंशियल्स (इथे तुमचे की भरा)
 CID = "R990942"
-AKEY = "c75cUJga"
+AKEY = "c75cUJga"  
 PIN = "8547"               
 TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E" 
 
-# 🧠 सेशन स्टेट बॅकअप (वारंवार डाउनलोड रोखण्यासाठी)
 if 'is_connected' not in st.session_state: st.session_state['is_connected'] = False
 if 'smartApi' not in st.session_state: st.session_state['smartApi'] = None
-if 'nifty_df_cache' not in st.session_state: st.session_state['nifty_df_cache'] = None
-if 'crude_df_cache' not in st.session_state: st.session_state['crude_df_cache'] = None
-if 'last_fetch_time' not in st.session_state: st.session_state['last_fetch_time'] = {'NIFTY': datetime.min, 'CRUDE': datetime.min}
+
+# फेचिंग स्टेटस तपासण्यासाठी नवीन मेमरी टूल
+if 'fetch_status' not in st.session_state:
+    st.session_state['fetch_status'] = {'NIFTY': 'Not Started', 'CRUDE': 'Not Started', 'ERROR_LOG': 'None'}
 
 if 'last_valid_data' not in st.session_state:
     st.session_state['last_valid_data'] = {
@@ -29,35 +29,28 @@ if 'last_valid_data' not in st.session_state:
         'crude_spot': 6817.0, 'crude_rsi': 47.9, 'crude_ema9': 6812.0,
         'setup_detected': "Major Rejection", 'c_setup': "Pullback"
     }
-# 🛠️ ट्रेडिंगव्ह्यू अचूक RSI (RMA Method)
+# 🛠️ ट्रेडिंगव्ह्यू अचूक RSI
 def calculate_tv_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).astype(float)
     loss = (-delta.where(delta < 0, 0)).astype(float)
-    
     alpha = 1 / period
     avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
     avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
-    
     rs = avg_gain / avg_loss.replace(0, 0.00001)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.iloc[-1]
+    return float((100 - (100 / (1 + rs))).iloc[-1])
 
-# 🧮 लाईव्ह टिक सिंकिंग इंजिन
+# 🧮 इंडिकेटर प्रोसेसिंग
 def process_indicators(df, current_ltp):
-    if df is None or df.empty:
+    if df is None or df.empty or len(df) < 15:
         return 0.0, 0.0
-    
     df_calc = df.copy()
-    # शेवटच्या कॅन्डलमध्ये लाईव्ह टिक भरणे
     df_calc.iloc[-1, df_calc.columns.get_loc('close')] = current_ltp
     df_calc['close'] = df_calc['close'].astype(float)
-    
     rsi_val = calculate_tv_rsi(df_calc['close'], 14)
     ema_val = float(df_calc['close'].ewm(span=9, adjust=False).mean().iloc[-1])
-    
-    return float(rsi_val), float(ema_val)
-# 🚪 साइडबार ऑटोलॉगिन
+    return rsi_val, ema_val
+# 🚪 साइडबार लॉगिन
 st.title("⚡ ALGO LIVE")
 st.sidebar.header("🔐 ALGO AUTOLOGIN")
 
@@ -83,60 +76,71 @@ else:
         st.session_state['smartApi'] = None
         st.rerun()
 
-# 🖳 मुख्य रेंडरिंग स्क्रीन
+# 🖳 मुख्य डेटा स्क्रीन
 if st.session_state['is_connected'] and st.session_state['smartApi']:
     smartApi = st.session_state['smartApi']
     ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
-    current_time = ist_now.time()
-    is_weekend = (ist_now.weekday() >= 5)
     
+    # 🔍 डेटा फेचिंग इंजिन (थेट त्रुटी पकडण्यासाठी सुधारित)
+    try:
+        # १. निफ्टी डेटा फेचिंग चाचणी
+        ltp_res = smartApi.ltpData("NSE", "NIFTY", "99926000")
+        if ltp_res and ltp_res.get('status') and ltp_res.get('data'):
+            live_spot = float(ltp_res['data']['ltp'])
+            st.session_state['fetch_status']['NIFTY'] = '🟢 LTP Connected'
+            
+            from_time = (ist_now - timedelta(minutes=200)).strftime("%Y-%m-%d %H:%M")
+            res = smartApi.getCandleData({"exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE", "fromdate": from_time, "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
+            
+            if res and res.get('data') and len(res['data']) > 0:
+                df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+                rsi_v, ema9 = process_indicators(df, live_spot)
+                st.session_state['last_valid_data'].update({'live_spot': live_spot, 'rsi_v': rsi_v, 'ema9': ema9})
+                st.session_state['fetch_status']['NIFTY'] = '🟢 Full Data Success'
+            else:
+                st.session_state['fetch_status']['NIFTY'] = '❌ Candle Data Blank (Check Historical API)'
+        else:
+            st.session_state['fetch_status']['NIFTY'] = '❌ LTP Connection Failed'
+            
+        # २. क्रूड ऑईल डेटा फेचिंग चाचणी
+        crude_ltp_res = smartApi.ltpData("MCX", "CRUDEOIL", "255294")
+        if crude_ltp_res and crude_ltp_res.get('status') and crude_ltp_res.get('data'):
+            crude_spot = float(crude_ltp_res['data']['ltp'])
+            st.session_state['fetch_status']['CRUDE'] = '🟢 LTP Connected'
+            
+            from_time = (ist_now - timedelta(minutes=300)).strftime("%Y-%m-%d %H:%M")
+            res_c = smartApi.getCandleData({"exchange": "MCX", "symboltoken": "255294", "interval": "FIVE_MINUTE", "fromdate": from_time, "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
+            
+            if res_c and res_c.get('data') and len(res_c['data']) > 0:
+                df_c = pd.DataFrame(res_c['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+                crude_rsi, crude_ema9 = process_indicators(df_c, crude_spot)
+                st.session_state['last_valid_data'].update({'crude_spot': crude_spot, 'crude_rsi': crude_rsi, 'crude_ema9': crude_ema9})
+                st.session_state['fetch_status']['CRUDE'] = '🟢 Full Data Success'
+            else:
+                st.session_state['fetch_status']['CRUDE'] = '❌ Candle Data Blank (Check MCX Token/API)'
+        else:
+            st.session_state['fetch_status']['CRUDE'] = '❌ LTP Connection Failed'
+            
+    except Exception as api_err:
+        st.session_state['fetch_status']['ERROR_LOG'] = str(api_err)
+
+    # 📊 लाईव्ह डेटा ट्रॅकर स्क्रीनवर दाखवणे (का अडकले ते समजण्यासाठी)
+    st.info(f"🔍 NIFTY Status: {st.session_state['fetch_status']['NIFTY']}")
+    st.info(f"🔍 CRUDE Status: {st.session_state['fetch_status']['CRUDE']}")
+    if st.session_state['fetch_status']['ERROR_LOG'] != 'None':
+        st.error(f"⚠️ Code Error: {st.session_state['fetch_status']['ERROR_LOG']}")
+
+    # मुख्य डॅशबोर्ड डेटा लोड करणे
     live_spot = st.session_state['last_valid_data']['live_spot']
     rsi_v = st.session_state['last_valid_data']['rsi_v']
     ema9 = st.session_state['last_valid_data']['ema9']
     crude_spot = st.session_state['last_valid_data']['crude_spot']
     crude_rsi = st.session_state['last_valid_data']['crude_rsi']
     crude_ema9 = st.session_state['last_valid_data']['crude_ema9']
-
-    # 📈 १. निफ्टी ऑप्टिमाइझ फेचिंग
-    if (not is_weekend) and (datetime_time(9, 15) <= current_time <= datetime_time(15, 30)):
-        try:
-            ltp_res = smartApi.ltpData("NSE", "NIFTY", "99926000")
-            if ltp_res and ltp_res.get('status'): live_spot = float(ltp_res['data']['ltp'])
-            
-            # ५ मिनिटांतून फक्त एकदाच हिस्टोरिकल डेटा मागवणे (अडथळा रोखण्यासाठी)
-            if st.session_state['nifty_df_cache'] is None or (ist_now - st.session_state['last_fetch_time']['NIFTY']).total_seconds() > 300:
-                from_time = (ist_now - timedelta(minutes=400)).strftime("%Y-%m-%d %H:%M")
-                res = smartApi.getCandleData({"exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE", "fromdate": from_time, "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
-                if res and res.get('data'):
-                    st.session_state['nifty_df_cache'] = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
-                    st.session_state['last_fetch_time']['NIFTY'] = ist_now
-            
-            if st.session_state['nifty_df_cache'] is not None:
-                rsi_v, ema9 = process_indicators(st.session_state['nifty_df_cache'], live_spot)
-        except: pass
-
-    # 🛢️ २. क्रूड ऑईल रात्रीच्या टेस्टिंगसाठी ऑप्टिमाइझ फेचिंग
-    if (not is_weekend) and (datetime_time(9, 0) <= current_time <= datetime_time(23, 30)):
-        try:
-            crude_ltp_res = smartApi.ltpData("MCX", "CRUDEOIL", "255294")
-            if crude_ltp_res and crude_ltp_res.get('status'): crude_spot = float(crude_ltp_res['data']['ltp'])
-            
-            if st.session_state['crude_df_cache'] is None or (ist_now - st.session_state['last_fetch_time']['CRUDE']).total_seconds() > 300:
-                from_time = (ist_now - timedelta(minutes=500)).strftime("%Y-%m-%d %H:%M")
-                res_c = smartApi.getCandleData({"exchange": "MCX", "symboltoken": "255294", "interval": "FIVE_MINUTE", "fromdate": from_time, "todate": ist_now.strftime("%Y-%m-%d %H:%M")})
-                if res_c and res_c.get('data'):
-                    st.session_state['crude_df_cache'] = pd.DataFrame(res_c['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
-                    st.session_state['last_fetch_time']['CRUDE'] = ist_now
-                    
-            if st.session_state['crude_df_cache'] is not None:
-                crude_rsi, crude_ema9 = process_indicators(st.session_state['crude_df_cache'], crude_spot)
-        except: pass
-
-    st.session_state['last_valid_data'].update({'live_spot': live_spot, 'rsi_v': rsi_v, 'ema9': ema9, 'crude_spot': crude_spot, 'crude_rsi': crude_rsi, 'crude_ema9': crude_ema9})
-
-    # UI कार्ड्स डिस्प्ले
+    
     setup = "Major Rejection" if rsi_v < 30 else "Pullback"
     c_setup = "Day High/Low" if crude_rsi > 55 else "Pullback"
+    
     tab_nifty, tab_crude = st.tabs(["📈 NIFTY 50", "🛢️ CRUDEOIL"])
     t_map = lambda s: '<span style="color:#00e676;font-weight:bold;">[✓ PASS]</span>' if s=="PASS" else '<span style="color:#ff5252;font-weight:bold;">[💡 LOCK]</span>'
     s_active = lambda act, s_name: "background:#00e67620;border:1px solid #00e676;color:#00e676;" if act == s_name else "background:#111422;opacity:0.3;color:#8f96a3;"
@@ -159,12 +163,8 @@ if st.session_state['is_connected'] and st.session_state['smartApi']:
                     <div style="background:#111422; padding:5px; border-radius:4px;"><b>9 EMA:</b> {ema9:.2f}</div>
                 </div>
             </div>
-            <div style="background:#111422; padding:12px; border-radius:10px; font-size:12px; border: 1px solid #1c2136; line-height:1.6;">
-                <div>1. Pinpoint RSI <b>({rsi_v:.2f})</b>: {t_map(r_st)}</div>
-                <div>2. Institutional 9 EMA: {t_map(e_st)}</div>
-            </div>
         </div>"""
-        components.html(dhan_card_n, height=260, scrolling=False)
+        components.html(dhan_card_n, height=190, scrolling=False)
 
     with tab_crude:
         cr_st = "PASS" if crude_rsi > 55 else "FAIL"
@@ -184,12 +184,8 @@ if st.session_state['is_connected'] and st.session_state['smartApi']:
                     <div style="background:#111422; padding:5px; border-radius:4px;"><b>9 EMA:</b> ₹{crude_ema9:.2f}</div>
                 </div>
             </div>
-            <div style="background:#111422; padding:15px; border-radius:10px; font-size:12px; border:1px solid #1c2136; line-height:1.6;">
-                <div>1. Pinpoint RSI <b>({crude_rsi:.2f})</b>: {t_map(cr_st)}</div>
-                <div>2. Institutional 9 EMA: {t_map(ce_st)}</div>
-            </div>
         </div>"""
-        components.html(dhan_card_c, height=260, scrolling=False)
+        components.html(dhan_card_c, height=190, scrolling=False)
 
-    time.sleep(2)
+    time.sleep(3)
     st.rerun()
