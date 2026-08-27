@@ -129,14 +129,31 @@ dhan_card_premium = f"""
 
 components.html(dhan_card_premium, height=440, scrolling=False)
 
-# 📈 १००% चालणारा नवीन लाईव्ह कँडलस्टिक चार्ट (No Refuse Connection Route)
+# 📈 अधिकृत TradingView Mini Live Chart (झीरो एरर - मोफत अधिकृत मॉडेल)
 st.markdown("### 📈 NIFTY 50 LIVE CHART")
-live_market_chart = """
-<iframe src="https://investing.com" 
-        style="width: 100%; height: 350px; margin: 0; padding: 0; border: none; border-radius: 12px; border: 1px solid #1c2136;">
-</iframe>
+tradingview_mini_chart = """
+<div style="height:220px; width:100%; border-radius:12px; overflow:hidden; border: 1px solid #1c2136;">
+    <!-- TradingView Widget BEGIN -->
+    <div class="tradingview-widget-container">
+      <div class="tradingview-widget-container__widget"></div>
+      <script type="text/javascript" src="https://tradingview.com" async>
+      {
+      "symbol": "NSE:NIFTY",
+      "width": "100%",
+      "height": "100%",
+      "locale": "in",
+      "dateRange": "1D",
+      "colorTheme": "dark",
+      "isTransparent": false,
+      "autosize": true,
+      "largeChartUrl": ""
+    }
+      </script>
+    </div>
+    <!-- TradingView Widget END -->
+</div>
 """
-components.html(live_market_chart, height=360, scrolling=False)
+components.html(tradingview_mini_chart, height=230, scrolling=False)
 
 # ⏱️ रीफ्रेश लूप (२ सेकंद)
 time.sleep(2)
