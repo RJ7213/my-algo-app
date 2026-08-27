@@ -6,14 +6,14 @@ import streamlit.components.v1 as components
 
 # 💻 कॉम्पॅक्ट मोबाईल लेआउट सेटिंग्स
 st.set_page_config(page_title="NIFTY FLUID DASHBOARD", page_icon="⚡", layout="centered")
-st.markdown("<style>.main .block-container { padding: 1rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
+st.markdown("<style>.main .block-container { padding: 0.5rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
 # 💾 सेफ डेटा लोडर फंक्शन
 def load_live_signal():
     if not os.path.exists('data_signal.json'):
         return {
-            'live_spot': 24140.90, 'rsi_v': 34.1, 'ema9': 24149.79, 'nifty_status': '⏳ Waiting',
-            'rsi_status': 'FAIL', 'ema_status': 'FAIL', 'vol_status': 'FAIL',
+            'live_spot': 24127.35, 'rsi_v': 31.2, 'ema9': 24151.51, 'nifty_status': '⏳ Waiting',
+            'rsi_status': 'PASS', 'ema_status': 'FAIL', 'vol_status': 'FAIL',
             'runway_status': 'FAIL', 'oi_status': 'FAIL', 'wall_status': 'FAIL',
             'vol_val': '1.0x', 'runway_val': '0 pts', 'oi_val': '1.0x', 'depth_val': '0%',
             'signal_active': False, 'trade_type': 'NONE', 'entry_p': 0.0, 'sl_p': 0.0, 'target_p': 0.0,
@@ -26,10 +26,10 @@ def load_live_signal():
 data = load_live_signal()
 st.session_state['previous_good_data'] = data
 
-st.title("⚡ NIFTY ALGO LIVE")
-st.info(f"📊 NIFTY 50: {data.get('nifty_status', '🔄 Syncing')} | 🕒 Last Update: {data.get('last_update', '00:00:00')}")
+# 📱 वरचा स्टेटस बार (मोकळी जागा वाचवण्यासाठी नाव काढले)
+st.info(f"📊 NIFTY 50: {data.get('nifty_status', '🔄 Syncing')} | 🕒 TS: {data.get('last_update', '00:00:00')}")
 
-rsi_v = data.get('rsi_v', 34.1)
+rsi_v = data.get('rsi_v', 31.2)
 setup = "Pullback" if rsi_v < 50 else "Day High/Low"
 t_type = data.get('trade_type', 'NONE')
 
@@ -38,6 +38,7 @@ def check_active(actual, expected):
 
 def map_pass_fail(status_str):
     return '<span style="color:#00e676;font-weight:bold;">[✓ PASS]</span>' if status_str == "PASS" else '<span style="color:#ff5252;font-weight:bold;">[💡 LOCK]</span>'
+
 # 🎫 टार्गेट, एसएल आणि लॉट साईझ डिस्प्ले कार्ड
 trade_card_html = ""
 if data.get('signal_active', False):
@@ -68,7 +69,7 @@ if data.get('signal_active', False):
         </div>
     </div>"""
 
-# 🎨 नवीन टेबल लेआउट रचना (तुमच्या मागणीनुसार मूल्य आणि स्टेटस वेगळे केले)
+# 🎨 प्रेशम टेबल लेआउट (उंची फिक्स केली - नो क्रॉप)
 dhan_card_premium = f"""
 <div style="background-color:#060814; padding:15px; border-radius:12px; color:white; border: 1px solid #1c2136; font-family:-apple-system,BlinkMacSystemFont,sans-serif; line-height: 1.4;">
     <div style="font-size:10px; color:#8f96a3; margin-bottom:8px; font-weight:bold;">🐾 DETECTED TECHNICAL SETUP</div>
@@ -79,7 +80,7 @@ dhan_card_premium = f"""
         <div style="{check_active(setup, 'Major Rejection')}; padding:6px; border-radius:6px;">Major Rejection</div>
     </div>
     <div style="background-color:#00e67610; border:1px solid #00e67650; padding:12px; border-radius:10px; text-align:center; margin-bottom:15px;">
-        <h1 style="font-size:36px; margin:4px 0; color:#00e676; font-weight:bold;">{data.get('live_spot', 24140.90):.2f}</h1>
+        <h1 style="font-size:36px; margin:4px 0; color:#00e676; font-weight:bold;">{data.get('live_spot', 24127.35):.2f}</h1>
     </div>
     
     <div style="font-size:11px; color:#ffb300; margin-bottom:8px; font-weight:bold;">📋 FLUID CRITERIA MATRICES</div>
@@ -99,7 +100,7 @@ dhan_card_premium = f"""
             </tr>
             <tr style="border-bottom: 1px solid #1c2136;">
                 <td style="padding:8px; color:#fff;">2. Institutional 9 EMA</td>
-                <td style="padding:8px; text-align:center; font-weight:bold; color:#fff;">{data.get('ema9', 24149.79):.2f}</td>
+                <td style="padding:8px; text-align:center; font-weight:bold; color:#fff;">{data.get('ema9', 24151.51):.2f}</td>
                 <td style="padding:8px; text-align:right;">{map_pass_fail(data.get('ema_status'))}</td>
             </tr>
             <tr style="border-bottom: 1px solid #1c2136;">
@@ -127,35 +128,19 @@ dhan_card_premium = f"""
     {trade_card_html}
 </div>"""
 
-components.html(dhan_card_premium, height=360, scrolling=False)
-# 📊 अधिकृत ट्रेडिंगव्ह्यू लाईव्ह चार्ट विजेट (Refused Connection फिक्स रस्ता)
+# मुख्य टेबल कार्ड रेंडर करणे (पुरेशी उंची ३६० वरून ३९० केली)
+components.html(dhan_card_premium, height=390, scrolling=False)
+
+# 📊 नवीन अधिकृत TradingView Standard Iframe (मोबाईलवर १००% चालणारा रस्ता)
 st.markdown("### 📈 NIFTY 50 LIVE CHART")
-tradingview_widget = """
-<div style="height:350px; width:100%; border-radius:12px; overflow:hidden; border: 1px solid #1c2136;">
-    <iframe src="https://tradingview.com" style="display:none;"></iframe>
-    <div id="tv-chart-container" style="height:100%; width:100%;"></div>
-    <script type="text/javascript" src="https://tradingview.com"></script>
-    <script type="text/javascript">
-    new TradingView.widget({
-      "width": "100%",
-      "height": "100%",
-      "symbol": "NSE:NIFTY",
-      "interval": "5",
-      "timezone": "Asia/Kolkata",
-      "theme": "dark",
-      "style": "1",
-      "locale": "in",
-      "toolbar_bg": "#f1f3f6",
-      "enable_publishing": false,
-      "hide_top_toolbar": true,
-      "hide_legend": false,
-      "save_image": false,
-      "container_id": "tv-chart-container"
-    });
-    </script>
+tradingview_iframe = """
+<div style="height:320px; width:100%; border-radius:12px; overflow:hidden; border: 1px solid #1c2136;">
+    <iframe src="https://tradingview.com" 
+            style="width: 100%; height: 100%; margin: 0; padding: 0; border: none;">
+    </iframe>
 </div>
 """
-components.html(tradingview_widget, height=360, scrolling=False)
+components.html(tradingview_iframe, height=330, scrolling=False)
 
 # ⏱️ स्क्रीन रीफ्रेश रेट (२ सेकंद)
 time.sleep(2)
