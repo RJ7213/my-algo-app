@@ -20,12 +20,9 @@ def load_live_signal():
             'risk_cash': '0', 'lots_suggested': '0 Lots', 'last_update': '00:00:00'
         }
     try:
-        with open('data_signal.json', 'r') as f: 
-            return json.load(f)
-    except: 
-        return st.session_state.get('previous_good_data')
+        with open('data_signal.json', 'r') as f: return json.load(f)
+    except: return st.session_state.get('previous_good_data')
 
-# 📊 मुख्य डेटा रीड करणे
 data = load_live_signal()
 st.session_state['previous_good_data'] = data
 
@@ -41,7 +38,6 @@ def check_active(actual, expected):
 
 def map_pass_fail(status_str):
     return '<span style="color:#00e676;font-weight:bold;">[✓ PASS]</span>' if status_str == "PASS" else '<span style="color:#ff5252;font-weight:bold;">[💡 LOCK]</span>'
-
 # 🎫 टार्गेट, एसएल आणि लॉट साईझ डिस्प्ले कार्ड
 trade_card_html = ""
 if data.get('signal_active', False):
@@ -72,7 +68,7 @@ if data.get('signal_active', False):
         </div>
     </div>"""
 
-# 🎨 प्रीमियम डॅशबोर्ड कार्ड रेंडरिंग रचना
+# 🎨 नवीन टेबल लेआउट रचना (तुमच्या मागणीनुसार मूल्य आणि स्टेटस वेगळे केले)
 dhan_card_premium = f"""
 <div style="background-color:#060814; padding:15px; border-radius:12px; color:white; border: 1px solid #1c2136; font-family:-apple-system,BlinkMacSystemFont,sans-serif; line-height: 1.4;">
     <div style="font-size:10px; color:#8f96a3; margin-bottom:8px; font-weight:bold;">🐾 DETECTED TECHNICAL SETUP</div>
@@ -84,36 +80,82 @@ dhan_card_premium = f"""
     </div>
     <div style="background-color:#00e67610; border:1px solid #00e67650; padding:12px; border-radius:10px; text-align:center; margin-bottom:15px;">
         <h1 style="font-size:36px; margin:4px 0; color:#00e676; font-weight:bold;">{data.get('live_spot', 24140.90):.2f}</h1>
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11px; margin-top:5px;">
-            <div style="background:#111422; padding:6px; border-radius:4px;"><b>Nifty RSI:</b> {rsi_v:.1f}</div>
-            <div style="background:#111422; padding:6px; border-radius:4px;"><b>9 EMA:</b> {data.get('ema9', 24149.79):.2f}</div>
-        </div>
     </div>
+    
     <div style="font-size:11px; color:#ffb300; margin-bottom:8px; font-weight:bold;">📋 FLUID CRITERIA MATRICES</div>
-    <div style="background:#111422; padding:12px; border-radius:10px; font-size:12px; border: 1px solid #1c2136; display:flex; flex-direction:column; gap:6px;">
-        <div style="display:flex; justify-content:space-between; width:100%;"><span>1. 5-Min True RSI ({rsi_v:.1f})</span> <span>{map_pass_fail(data.get('rsi_status'))}</span></div>
-        <div style="display:flex; justify-content:space-between; width:100%;"><span>2. Institutional 9 EMA</span> <span>{map_pass_fail(data.get('ema_status'))}</span></div>
-        <div style="display:flex; justify-content:space-between; width:100%;"><span>3. Volume Tower ({data.get('vol_val')})</span> <span>{map_pass_fail(data.get('vol_status'))}</span></div>
-        <div style="display:flex; justify-content:space-between; width:100%;"><span>4. Runway Breakthrough ({data.get('runway_val')})</span> <span>{map_pass_fail(data.get('runway_status'))}</span></div>
-        <div style="display:flex; justify-content:space-between; width:100%;"><span>5. Option Chain OI Bias ({data.get('oi_val')})</span> <span>{map_pass_fail(data.get('oi_status'))}</span></div>
-        <div style="display:flex; justify-content:space-between; width:100%;"><span>6. Order Book Depth Wall ({data.get('depth_val')})</span> <span>{map_pass_fail(data.get('wall_status'))}</span></div>
-    </div>
+    <table style="width:100%; font-size:12px; border-collapse:collapse; background:#111422; border-radius:10px; overflow:hidden; border: 1px solid #1c2136;">
+        <thead>
+            <tr style="background:#1c2136; color:#8f96a3; font-size:10px; text-align:left;">
+                <th style="padding:8px;">INDICATOR NAME</th>
+                <th style="padding:8px; text-align:center;">VALUE</th>
+                <th style="padding:8px; text-align:right;">STATUS</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr style="border-bottom: 1px solid #1c2136;">
+                <td style="padding:8px; color:#fff;">1. 5-Min True RSI</td>
+                <td style="padding:8px; text-align:center; font-weight:bold; color:#ffb300;">{rsi_v:.1f}</td>
+                <td style="padding:8px; text-align:right;">{map_pass_fail(data.get('rsi_status'))}</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #1c2136;">
+                <td style="padding:8px; color:#fff;">2. Institutional 9 EMA</td>
+                <td style="padding:8px; text-align:center; font-weight:bold; color:#fff;">{data.get('ema9', 24149.79):.2f}</td>
+                <td style="padding:8px; text-align:right;">{map_pass_fail(data.get('ema_status'))}</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #1c2136;">
+                <td style="padding:8px; color:#fff;">3. Volume Tower</td>
+                <td style="padding:8px; text-align:center; font-weight:bold; color:#fff;">{data.get('vol_val')}</td>
+                <td style="padding:8px; text-align:right;">{map_pass_fail(data.get('vol_status'))}</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #1c2136;">
+                <td style="padding:8px; color:#fff;">4. Runway Breakthrough</td>
+                <td style="padding:8px; text-align:center; font-weight:bold; color:#fff;">{data.get('runway_val')}</td>
+                <td style="padding:8px; text-align:right;">{map_pass_fail(data.get('runway_status'))}</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #1c2136;">
+                <td style="padding:8px; color:#fff;">5. Option Chain OI Bias</td>
+                <td style="padding:8px; text-align:center; font-weight:bold; color:#fff;">{data.get('oi_val')}</td>
+                <td style="padding:8px; text-align:right;">{map_pass_fail(data.get('oi_status'))}</td>
+            </tr>
+            <tr>
+                <td style="padding:8px; color:#fff;">6. Order Book Depth Wall</td>
+                <td style="padding:8px; text-align:center; font-weight:bold; color:#fff;">{data.get('depth_val')}</td>
+                <td style="padding:8px; text-align:right;">{map_pass_fail(data.get('wall_status'))}</td>
+            </tr>
+        </tbody>
+    </table>
     {trade_card_html}
 </div>"""
 
-# मुख्य चेकलिस्ट कार्ड दाखवणे
-components.html(dhan_card_premium, height=540, scrolling=False)
-
-# 📊 नवीन एम्बेड केलेले अधिकृत TradingView लाईव्ह चार्ट विजेट (विना-अडथळा रचना)
+components.html(dhan_card_premium, height=360, scrolling=False)
+# 📊 अधिकृत ट्रेडिंगव्ह्यू लाईव्ह चार्ट विजेट (Refused Connection फिक्स रस्ता)
 st.markdown("### 📈 NIFTY 50 LIVE CHART")
 tradingview_widget = """
-<div style="height:320px; width:100%; border-radius:12px; overflow:hidden; border: 1px solid #1c2136;">
-    <iframe src="https://tradingview.com" 
-            style="width: 100%; height: 100%; margin: 0; padding: 0; border: none;">
-    </iframe>
+<div style="height:350px; width:100%; border-radius:12px; overflow:hidden; border: 1px solid #1c2136;">
+    <iframe src="https://tradingview.com" style="display:none;"></iframe>
+    <div id="tv-chart-container" style="height:100%; width:100%;"></div>
+    <script type="text/javascript" src="https://tradingview.com"></script>
+    <script type="text/javascript">
+    new TradingView.widget({
+      "width": "100%",
+      "height": "100%",
+      "symbol": "NSE:NIFTY",
+      "interval": "5",
+      "timezone": "Asia/Kolkata",
+      "theme": "dark",
+      "style": "1",
+      "locale": "in",
+      "toolbar_bg": "#f1f3f6",
+      "enable_publishing": false,
+      "hide_top_toolbar": true,
+      "hide_legend": false,
+      "save_image": false,
+      "container_id": "tv-chart-container"
+    });
+    </script>
 </div>
 """
-components.html(tradingview_widget, height=330, scrolling=False)
+components.html(tradingview_widget, height=360, scrolling=False)
 
 # ⏱️ स्क्रीन रीफ्रेश रेट (२ सेकंद)
 time.sleep(2)
