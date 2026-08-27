@@ -4,9 +4,11 @@ import os
 import streamlit as st
 import streamlit.components.v1 as components
 
+# 💻 कॉम्पॅक्ट मोबाईल लेआउट सेटिंग्स
 st.set_page_config(page_title="NIFTY FLUID DASHBOARD", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 0.5rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
+# 💾 सेफ डेटा लोडर फंक्शन
 def load_live_signal():
     if not os.path.exists('data_signal.json'):
         return {
@@ -14,7 +16,7 @@ def load_live_signal():
             'rsi_status': 'FAIL', 'ema_status': 'PASS', 'vol_status': 'FAIL',
             'runway_status': 'FAIL', 'oi_status': 'FAIL', 'wall_status': 'PASS',
             'vol_val': '1.0x', 'runway_val': '0 pts', 'oi_val': '1.0x', 'depth_val': '62%',
-            'intraday_high': 24200.0, 'intraday_low': 24100.0, 'algo_reason': 'Initializing Matrix...',
+            'intraday_high': 24297.45, 'intraday_low': 24120.6, 'algo_reason': 'Initializing Matrix...',
             'signal_active': False, 'trade_type': 'NONE', 'entry_p': 0.0, 'sl_p': 0.0, 'target_p': 0.0,
             'risk_cash': '₹2000', 'lots_suggested': '0 Lots', 'last_update': '00:00:00'
         }
@@ -67,7 +69,7 @@ if data.get('signal_active', False):
         </div>
     </div>"""
 
-# 🎨 ६ चे ६ चेकपॉइंट्स मास्टर टेबल आणि प्राईस ॲक्शन रीडर
+# 🎨 डॅशबोर्ड टेबल आणि प्राईस ॲक्शन लेआउट
 dhan_card_premium = f"""
 <div style="background-color:#060814; padding:15px; border-radius:12px; color:white; border: 1px solid #1c2136; font-family:-apple-system,BlinkMacSystemFont,sans-serif; line-height: 1.4; height: 500px;">
     <div style="font-size:10px; color:#8f96a3; margin-bottom:8px; font-weight:bold;">🐾 DETECTED TECHNICAL SETUP</div>
@@ -123,14 +125,13 @@ dhan_card_premium = f"""
         </tbody>
     </table>
     
-    <!-- 👁️ अल्गो ब्रेन प्राईस ॲक्शन रिअल-टाईम मेसेज विंडो -->
     <div style="background:#1c2136; border-radius:8px; padding:10px; font-size:11px; margin-top:10px; border-left:4px solid #ffb300; color:#e2e5ec;">
         🧠 <b>ALGO ANALYSIS:</b> {data.get('algo_reason')}
     </div>
     
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:10px; margin-top:8px; text-align:center; color:#8f96a3;">
         <div style="background:#111422; padding:5px; border-radius:4px;">🎯 Day High Wall: <b>{data.get('intraday_high')}</b></div>
-        <div style="background:#111422; padding:5px; padding:5px; border-radius:4px;">🛡️ Day Low Ground: <b>{data.get('intraday_low')}</b></div>
+        <div style="background:#111422; padding:5px; border-radius:4px;">🛡️ Day Low Ground: <b>{data.get('intraday_low')}</b></div>
     </div>
     
     {trade_card_html}
