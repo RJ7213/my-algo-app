@@ -5,6 +5,7 @@ import numpy as np
 import json
 from datetime import datetime, timedelta
 
+# 🔐 क्रेडेंशियल्स
 CID = "R990942"
 AKEY = "c75cUJga"  
 PIN = "8547"               
@@ -14,6 +15,7 @@ NIFTY_TOKEN = "99926000"
 USER_CAPITAL = 100000.0
 RISK_PER_TRADE = 0.02
 
+# 🛠️ ट्रेडिंगव्ह्यू RSI (Wilder's RMA Method)
 def calculate_tv_rsi(series, period=14):
     if len(series) < period + 1: return 50.0
     delta = series.diff()
@@ -44,11 +46,11 @@ def start_backend_factory():
             to_time = now_dt.strftime("%Y-%m-%d %H:%M")
             
             output_data = {
-                'live_spot': 24145.85, 'rsi_v': 44.2, 'ema9': 24148.59, 'nifty_status': 'Connecting',
+                'live_spot': 24152.65, 'rsi_v': 48.3, 'ema9': 24149.66, 'nifty_status': 'Connecting',
                 'rsi_status': 'FAIL', 'ema_status': 'FAIL', 'vol_status': 'FAIL',
                 'runway_status': 'FAIL', 'oi_status': 'FAIL', 'wall_status': 'FAIL',
                 'vol_val': '1.0x', 'runway_val': '0 pts', 'oi_val': '1.0x', 'depth_val': '0%',
-                'intraday_high': 24200.0, 'intraday_low': 24100.0, 'algo_reason': 'Analyzing Market Structure...',
+                'intraday_high': 24297.45, 'intraday_low': 24120.6, 'algo_reason': 'Analyzing Structure...',
                 'signal_active': False, 'trade_type': 'NONE', 'entry_p': 0.0, 'sl_p': 0.0, 'target_p': 0.0,
                 'risk_cash': f"₹{USER_CAPITAL * RISK_PER_TRADE:.0f}", 'lots_suggested': '0', 'last_update': now_dt.strftime("%H:%M:%S")
             }
@@ -71,47 +73,47 @@ def start_backend_factory():
                         rsi_v = calculate_tv_rsi(df_calc['close'].astype(float), 14)
                         ema9 = float(df_calc['close'].astype(float).ewm(span=9, adjust=False).mean().iloc[-1])
                         
-                        # 🏛️ प्राईस ॲक्शन इंट्राडे हाय / लो भिंती शोधणे
-                        intraday_high = float(df_calc['high'].astype(float).max())
-                        intraday_low = float(df_calc['low'].astype(float).min())
+                        # 🎯 फक्त आजच्या ९:१५ नंतरच्या कॅन्डल्स फिल्टर करणे
+                        today_str = now_dt.strftime("%Y-%m-%d")
+                        df_today = df_calc[df_calc['date'].astype(str).str.contains(today_str)].copy()
+                        
+                        if not df_today.empty and len(df_today) > 1:
+                            intraday_high = float(df_today['high'].astype(float).max())
+                            intraday_low = float(df_today['low'].astype(float).min())
+                        else:
+                            intraday_high = 24297.45
+                            intraday_low = 24120.6
                         
                         trade_type = "NONE"
-                        algo_reason = "Waiting for কडक Momentum Breakdown..."
-                        
-                        if rsi_v >= 60: 
-                            trade_type = "CE_BUY"
-                            algo_reason = f"🚀 RSI {rsi_v:.1f} (>60) Strong Bullish Momentum! Testing Intraday High {intraday_high}."
-                        elif rsi_v <= 40: 
-                            trade_type = "PE_BUY"
-                            algo_reason = f"💥 RSI {rsi_v:.1f} (<40) Strong Bearish Momentum! Testing Intraday Low {intraday_low}."
+                        # 🏛️ मॉर्निंग बॉक्स आणि मजबूत २४२०० रेसिस्टन्स भिंत लॉजिक
+                        if live_spot < 24200:
+                            algo_reason = f"📉 Price below 24200 Morning Box Low. Testing pullback resistance wall near 24200."
                         else:
-                            algo_reason = f"⏸️ Side-ways Range (RSI: {rsi_v:.1f}). No trade zone between {intraday_low} and {intraday_high}."
+                            algo_reason = f"⏸️ Price inside Morning Box Range. Analyzing breakout towards Day High {intraday_high}."
+                        
+                        if rsi_v >= 60: trade_type = "CE_BUY"
+                        elif rsi_v <= 40: trade_type = "PE_BUY"
                             
                         rsi_st = "PASS" if trade_type != "NONE" else "FAIL"
                         
                         ema_dist = abs(live_spot - ema9)
                         ema_st = "PASS" if ema_dist <= 20 else "FAIL"
-                        if ema_dist > 20: algo_reason = f"⚠️ Price stretched too far from 9 EMA ({ema_dist:.1f} pts). Mean reversion danger! Locking entries."
+                        if ema_dist > 20: algo_reason = f"⚠️ Price stretched from 9 EMA ({ema_dist:.1f} pts). Mean reversion active!"
                         
                         vol_last = float(df_calc['volume'].iloc[-1])
                         vol_prev = float(df_calc['volume'].iloc[-2]) if len(df_calc) > 1 else 1.0
                         vol_ratio = round(vol_last / vol_prev, 1) if vol_prev > 0 else 1.0
                         vol_st = "PASS" if vol_ratio >= 1.5 else "FAIL"
                         
-                        next_wall = intraday_high if trade_type == "CE_BUY" else intraday_low
-                        if trade_type == "CE_BUY" and live_spot >= intraday_high: next_wall = live_spot + 50.0
-                        elif trade_type == "PE_BUY" and live_spot <= intraday_low: next_wall = live_spot - 50.0
+                        # रनवे कॅल्क्युलेशन (२४२०० की २४२९७ ची भिंत)
+                        next_wall = 24200.0 if live_spot < 24200 else intraday_high
                         runway_diff = abs(next_wall - live_spot)
+                        runway_st = "PASS" if runway_diff >= 30 else "FAIL"
                         
                         candle_low = float(df_calc['low'].iloc[-1])
                         candle_high = float(df_calc['high'].iloc[-1])
                         raw_sl = abs(live_spot - candle_low) if trade_type == "CE_BUY" else abs(candle_high - live_spot)
                         sl_points = max(15.0, min(raw_sl, 25.0))
-                        
-                        min_runway_required = sl_points * 2
-                        runway_st = "PASS" if runway_diff >= min_runway_required else "FAIL"
-                        if trade_type != "NONE" and runway_diff < min_runway_required:
-                            algo_reason = f"🛑 Runway Space Insufficient ({runway_diff:.1f} pts). Target Wall is too close! Risk-Reward Mismatch."
                         
                         oi_st = "PASS" if runway_st == "PASS" else "FAIL"
                         wall_st = "PASS"
@@ -122,12 +124,9 @@ def start_backend_factory():
                         if all_pass:
                             entry_p = live_spot
                             sl_p = entry_p - sl_points if trade_type == "CE_BUY" else entry_p + sl_points
-                            target_p = entry_p + (sl_points * 2) if trade_type == "CE_BUY" else entry_p - (sl_points * 2)
-                            algo_reason = f"🎯 SETUP CONFIRMED! Target Locked at Structural Wall: {target_p:.2f}."
-                            
-                            cash_risk = USER_CAPITAL * RISK_PER_TRADE
-                            quantity = int(cash_risk / sl_points)
-                            lots = max(1, int(quantity / 75))
+                            target_p = next_wall
+                            algo_reason = f"🎯 SETUP CONFIRMED! Targeting Level: {target_p}."
+                            lots = max(1, int((USER_CAPITAL * RISK_PER_TRADE) / sl_points / 75))
 
                         output_data.update({
                             'live_spot': live_spot, 'rsi_v': rsi_v, 'ema9': ema9, 'nifty_status': '🟢 Active',
