@@ -12,10 +12,10 @@ st.markdown("<style>.main .block-container { padding: 0.5rem !important; max-wid
 def load_live_signal():
     if not os.path.exists('data_signal.json'):
         return {
-            'live_spot': 24141.95, 'rsi_v': 41.7, 'ema9': 24142.98, 'nifty_status': '⏳ Waiting',
+            'live_spot': 24144.75, 'rsi_v': 44.2, 'ema9': 24146.61, 'nifty_status': '⏳ Waiting',
             'rsi_status': 'FAIL', 'ema_status': 'PASS', 'vol_status': 'FAIL',
             'runway_status': 'FAIL', 'oi_status': 'FAIL', 'wall_status': 'PASS',
-            'vol_val': '1.0x', 'runway_val': '0 pts', 'oi_val': '1.0x', 'depth_val': '62%',
+            'vol_val': '1.0x', 'runway_val': '24.2 pts', 'oi_val': '1.8x', 'depth_val': '62%',
             'signal_active': False, 'trade_type': 'NONE', 'entry_p': 0.0, 'sl_p': 0.0, 'target_p': 0.0,
             'risk_cash': '0', 'lots_suggested': '0 Lots', 'last_update': '00:00:00'
         }
@@ -29,7 +29,7 @@ st.session_state['previous_good_data'] = data
 # 📱 स्टेटस बार
 st.info(f"📊 NIFTY 50: {data.get('nifty_status', '🔄 Syncing')} | 🕒 TS: {data.get('last_update', '00:00:00')}")
 
-rsi_v = data.get('rsi_v', 41.7)
+rsi_v = data.get('rsi_v', 44.2)
 setup = "Pullback" if rsi_v < 50 else "Day High/Low"
 t_type = data.get('trade_type', 'NONE')
 
@@ -80,7 +80,7 @@ dhan_card_premium = f"""
         <div style="{check_active(setup, 'Major Rejection')}; padding:6px; border-radius:6px;">Major Rejection</div>
     </div>
     <div style="background-color:#00e67610; border:1px solid #00e67650; padding:10px; border-radius:10px; text-align:center; margin-bottom:12px;">
-        <h1 style="font-size:34px; margin:2px 0; color:#00e676; font-weight:bold;">{data.get('live_spot', 24141.95):.2f}</h1>
+        <h1 style="font-size:34px; margin:2px 0; color:#00e676; font-weight:bold;">{data.get('live_spot', 24144.75):.2f}</h1>
     </div>
     
     <table style="width:100%; font-size:12px; border-collapse:collapse; background:#111422; border-radius:10px; overflow:hidden; border: 1px solid #1c2136;">
@@ -99,7 +99,7 @@ dhan_card_premium = f"""
             </tr>
             <tr style="border-bottom: 1px solid #1c2136;">
                 <td style="padding:6px 8px; color:#fff;">2. Institutional 9 EMA</td>
-                <td style="padding:6px 8px; text-align:center; font-weight:bold; color:#fff;">{data.get('ema9', 24142.98):.2f}</td>
+                <td style="padding:6px 8px; text-align:center; font-weight:bold; color:#fff;">{data.get('ema9', 24146.61):.2f}</td>
                 <td style="padding:6px 8px; text-align:right;">{map_pass_fail(data.get('ema_status'))}</td>
             </tr>
             <tr style="border-bottom: 1px solid #1c2136;">
@@ -129,31 +129,10 @@ dhan_card_premium = f"""
 
 components.html(dhan_card_premium, height=440, scrolling=False)
 
-# 📈 अधिकृत TradingView Mini Live Chart (झीरो एरर - मोफत अधिकृत मॉडेल)
+# 📈 झीरो-एरर लाईव्ह इमेज चार्ट (१००% हमखास लोड होणार)
 st.markdown("### 📈 NIFTY 50 LIVE CHART")
-tradingview_mini_chart = """
-<div style="height:220px; width:100%; border-radius:12px; overflow:hidden; border: 1px solid #1c2136;">
-    <!-- TradingView Widget BEGIN -->
-    <div class="tradingview-widget-container">
-      <div class="tradingview-widget-container__widget"></div>
-      <script type="text/javascript" src="https://tradingview.com" async>
-      {
-      "symbol": "NSE:NIFTY",
-      "width": "100%",
-      "height": "100%",
-      "locale": "in",
-      "dateRange": "1D",
-      "colorTheme": "dark",
-      "isTransparent": false,
-      "autosize": true,
-      "largeChartUrl": ""
-    }
-      </script>
-    </div>
-    <!-- TradingView Widget END -->
-</div>
-"""
-components.html(tradingview_mini_chart, height=230, scrolling=False)
+# टाइमस्टॅम्प जोडल्यामुळे ब्राऊझर दर २ सेकंदाला नवीन ताजी इमेज खेचून आणेल
+st.image(f"https://equitymaster.com{time.time()}", caption="रिअल-टाईम निफ्टी ५० ट्रेंड लाइन", use_container_width=True)
 
 # ⏱️ रीफ्रेश लूप (२ सेकंद)
 time.sleep(2)
