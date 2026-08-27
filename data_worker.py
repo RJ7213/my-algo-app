@@ -11,8 +11,8 @@ PIN = "8547"
 TKEY = "FQ7TSLI3L2UUKWZOC3TOJEFI6E" 
 NIFTY_TOKEN = "99926000"
 
-USER_CAPITAL = 100000.0  # 💰 तुमचे एकूण ट्रेडिंग कॅपिटल
-RISK_PER_TRADE = 0.02    # ⚠️ २% कडक रिस्क मॅनेजमेंट नियम
+USER_CAPITAL = 100000.0
+RISK_PER_TRADE = 0.02
 
 def calculate_tv_rsi(series, period=14):
     if len(series) < period + 1: return 50.0
@@ -40,12 +40,15 @@ def start_backend_factory():
         
         while True:
             now_dt = datetime.now() + timedelta(hours=5, minutes=30)
+            from_time = (now_dt - timedelta(days=2)).strftime("%Y-%m-%d %H:%M")
+            to_time = now_dt.strftime("%Y-%m-%d %H:%M")
             
             output_data = {
-                'live_spot': 24140.90, 'rsi_v': 34.1, 'ema9': 24149.79, 'nifty_status': 'Connecting',
+                'live_spot': 24145.85, 'rsi_v': 44.2, 'ema9': 24148.59, 'nifty_status': 'Connecting',
                 'rsi_status': 'FAIL', 'ema_status': 'FAIL', 'vol_status': 'FAIL',
                 'runway_status': 'FAIL', 'oi_status': 'FAIL', 'wall_status': 'FAIL',
                 'vol_val': '1.0x', 'runway_val': '0 pts', 'oi_val': '1.0x', 'depth_val': '0%',
+                'intraday_high': 24200.0, 'intraday_low': 24100.0, 'algo_reason': 'Analyzing Market Structure...',
                 'signal_active': False, 'trade_type': 'NONE', 'entry_p': 0.0, 'sl_p': 0.0, 'target_p': 0.0,
                 'risk_cash': f"₹{USER_CAPITAL * RISK_PER_TRADE:.0f}", 'lots_suggested': '0', 'last_update': now_dt.strftime("%H:%M:%S")
             }
@@ -56,9 +59,6 @@ def start_backend_factory():
                     live_spot = float(ltp_res['data']['ltp'])
                     
                     if cached_nifty_df is None or (now_dt - last_candle_fetch_time).total_seconds() > 300:
-                        # मागील ४८ तासांचा डेटा (पिव्होट आणि डेली हाय/लो काढण्यासाठी)
-                        from_time = (now_dt - timedelta(days=2)).strftime("%Y-%m-%d %H:%M")
-                        to_time = now_dt.strftime("%Y-%m-%d %H:%M")
                         res = smartApi.getCandleData({"exchange": "NSE", "symboltoken": NIFTY_TOKEN, "interval": "FIVE_MINUTE", "fromdate": from_time, "todate": to_time})
                         if res and res.get('data') and len(res['data']) > 0:
                             cached_nifty_df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
@@ -71,66 +71,70 @@ def start_backend_factory():
                         rsi_v = calculate_tv_rsi(df_calc['close'].astype(float), 14)
                         ema9 = float(df_calc['close'].astype(float).ewm(span=9, adjust=False).mean().iloc[-1])
                         
-                        # 🏛️ मार्केट स्ट्रक्चर पिव्होट्स लेव्हल्स (Mathematical Support/Resistance Walls)
+                        # 🏛️ प्राईस ॲक्शन इंट्राडे हाय / लो भिंती शोधणे
                         intraday_high = float(df_calc['high'].astype(float).max())
                         intraday_low = float(df_calc['low'].astype(float).min())
                         
-                        # टार्गेट वॉल कॅल्क्युलेशन (पुढची मोठी भिंत)
                         trade_type = "NONE"
-                        if rsi_v >= 60: trade_type = "CE_BUY"
-                        elif rsi_v <= 40: trade_type = "PE_BUY"
+                        algo_reason = "Waiting for কडक Momentum Breakdown..."
                         
-                        # डायनॅमिक रनवे आणि एसएल शोधणे
-                        next_wall = intraday_high if trade_type == "CE_BUY" else intraday_low
-                        if trade_type == "CE_BUY" and live_spot >= intraday_high:
-                            next_wall = live_spot + 50.0  # ब्रेकआऊट रनवे
-                        elif trade_type == "PE_BUY" and live_spot <= intraday_low:
-                            next_wall = live_spot - 50.0
+                        if rsi_v >= 60: 
+                            trade_type = "CE_BUY"
+                            algo_reason = f"🚀 RSI {rsi_v:.1f} (>60) Strong Bullish Momentum! Testing Intraday High {intraday_high}."
+                        elif rsi_v <= 40: 
+                            trade_type = "PE_BUY"
+                            algo_reason = f"💥 RSI {rsi_v:.1f} (<40) Strong Bearish Momentum! Testing Intraday Low {intraday_low}."
+                        else:
+                            algo_reason = f"⏸️ Side-ways Range (RSI: {rsi_v:.1f}). No trade zone between {intraday_low} and {intraday_high}."
                             
-                        runway_diff = abs(next_wall - live_spot)
-                        
-                        # कडक स्ट्रक्चरल स्टॉपलॉस (कॅन्डल लो किंवा २५ पॉईंट्स बफर)
-                        candle_low = float(df_calc['low'].iloc[-1])
-                        candle_high = float(df_calc['high'].iloc[-1])
-                        raw_sl = abs(live_spot - candle_low) if trade_type == "CE_BUY" else abs(candle_high - live_spot)
-                        sl_points = max(15.0, min(raw_sl, 25.0))  # १५ ते २५ पॉईंट्सच्या मध्ये लॉक
-                        
-                        # रिस्क रिवॉर्ड १:२ चेक
-                        min_runway_required = sl_points * 2
-                        runway_st = "PASS" if runway_diff >= min_runway_required else "FAIL"
-                        
                         rsi_st = "PASS" if trade_type != "NONE" else "FAIL"
+                        
                         ema_dist = abs(live_spot - ema9)
                         ema_st = "PASS" if ema_dist <= 20 else "FAIL"
+                        if ema_dist > 20: algo_reason = f"⚠️ Price stretched too far from 9 EMA ({ema_dist:.1f} pts). Mean reversion danger! Locking entries."
                         
                         vol_last = float(df_calc['volume'].iloc[-1])
                         vol_prev = float(df_calc['volume'].iloc[-2]) if len(df_calc) > 1 else 1.0
                         vol_ratio = round(vol_last / vol_prev, 1) if vol_prev > 0 else 1.0
                         vol_st = "PASS" if vol_ratio >= 1.5 else "FAIL"
                         
+                        next_wall = intraday_high if trade_type == "CE_BUY" else intraday_low
+                        if trade_type == "CE_BUY" and live_spot >= intraday_high: next_wall = live_spot + 50.0
+                        elif trade_type == "PE_BUY" and live_spot <= intraday_low: next_wall = live_spot - 50.0
+                        runway_diff = abs(next_wall - live_spot)
+                        
+                        candle_low = float(df_calc['low'].iloc[-1])
+                        candle_high = float(df_calc['high'].iloc[-1])
+                        raw_sl = abs(live_spot - candle_low) if trade_type == "CE_BUY" else abs(candle_high - live_spot)
+                        sl_points = max(15.0, min(raw_sl, 25.0))
+                        
+                        min_runway_required = sl_points * 2
+                        runway_st = "PASS" if runway_diff >= min_runway_required else "FAIL"
+                        if trade_type != "NONE" and runway_diff < min_runway_required:
+                            algo_reason = f"🛑 Runway Space Insufficient ({runway_diff:.1f} pts). Target Wall is too close! Risk-Reward Mismatch."
+                        
                         oi_st = "PASS" if runway_st == "PASS" else "FAIL"
                         wall_st = "PASS"
                         
                         all_pass = (rsi_st == "PASS" and ema_st == "PASS" and vol_st == "PASS" and runway_st == "PASS")
-                        entry_p, sl_p, target_p, quantity = 0.0, 0.0, 0.0, 0
+                        entry_p, sl_p, target_p, lots = 0.0, 0.0, 0.0, 0
                         
                         if all_pass:
                             entry_p = live_spot
                             sl_p = entry_p - sl_points if trade_type == "CE_BUY" else entry_p + sl_points
                             target_p = entry_p + (sl_points * 2) if trade_type == "CE_BUY" else entry_p - (sl_points * 2)
+                            algo_reason = f"🎯 SETUP CONFIRMED! Target Locked at Structural Wall: {target_p:.2f}."
                             
-                            # 🧮 पोझिशन सायझिंग फॉर्म्युला (२% मॅनेजमेंट)
                             cash_risk = USER_CAPITAL * RISK_PER_TRADE
                             quantity = int(cash_risk / sl_points)
-                            lots = max(1, int(quantity / 75))  # निफ्टी ७५ लॉट साईझनुसार
-                        else:
-                            lots = 0
+                            lots = max(1, int(quantity / 75))
 
                         output_data.update({
                             'live_spot': live_spot, 'rsi_v': rsi_v, 'ema9': ema9, 'nifty_status': '🟢 Active',
                             'rsi_status': rsi_st, 'ema_status': ema_st, 'vol_status': vol_st,
                             'runway_status': runway_st, 'oi_status': oi_st, 'wall_status': wall_st,
                             'vol_val': f"{vol_ratio}x", 'runway_val': f"{runway_diff:.1f} pts", 'oi_val': "1.8x", 'depth_val': "62%",
+                            'intraday_high': intraday_high, 'intraday_low': intraday_low, 'algo_reason': algo_reason,
                             'signal_active': all_pass, 'trade_type': trade_type, 'entry_p': entry_p, 'sl_p': sl_p, 'target_p': target_p,
                             'lots_suggested': f"{lots} Lots ({lots*75} Qty)"
                         })
