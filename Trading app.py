@@ -41,7 +41,8 @@ def check_active(actual, expected):
 
 def map_pass_fail(status_str):
     return '<span style="color:#00e676;font-weight:bold;">[✓ PASS]</span>' if status_str == "PASS" else '<span style="color:#ff5252;font-weight:bold;">[💡 LOCK]</span>'
-# 🎫 टार्गेट, एसएल आणि लॉट साईझ डिस्प्ले कार्ड (Dynamic Position Sizing Card - पूर्ण भाग)
+
+# 🎫 टार्गेट, एसएल आणि लॉट साईझ डिस्प्ले कार्ड
 trade_card_html = ""
 if data.get('signal_active', False):
     card_color = "#00e676" if t_type == "CE_BUY" else "#ff5252"
@@ -71,7 +72,7 @@ if data.get('signal_active', False):
         </div>
     </div>"""
 
-# 🎨 संपूर्ण डॅशबोर्ड रेंडरिंग रचना
+# 🎨 प्रीमियम डॅशबोर्ड कार्ड रेंडरिंग रचना
 dhan_card_premium = f"""
 <div style="background-color:#060814; padding:15px; border-radius:12px; color:white; border: 1px solid #1c2136; font-family:-apple-system,BlinkMacSystemFont,sans-serif; line-height: 1.4;">
     <div style="font-size:10px; color:#8f96a3; margin-bottom:8px; font-weight:bold;">🐾 DETECTED TECHNICAL SETUP</div>
@@ -100,6 +101,20 @@ dhan_card_premium = f"""
     {trade_card_html}
 </div>"""
 
+# मुख्य चेकलिस्ट कार्ड दाखवणे
 components.html(dhan_card_premium, height=540, scrolling=False)
+
+# 📊 नवीन एम्बेड केलेले अधिकृत TradingView लाईव्ह चार्ट विजेट (विना-अडथळा रचना)
+st.markdown("### 📈 NIFTY 50 LIVE CHART")
+tradingview_widget = """
+<div style="height:320px; width:100%; border-radius:12px; overflow:hidden; border: 1px solid #1c2136;">
+    <iframe src="https://tradingview.com" 
+            style="width: 100%; height: 100%; margin: 0; padding: 0; border: none;">
+    </iframe>
+</div>
+"""
+components.html(tradingview_widget, height=330, scrolling=False)
+
+# ⏱️ स्क्रीन रीफ्रेश रेट (२ सेकंद)
 time.sleep(2)
 st.rerun()
