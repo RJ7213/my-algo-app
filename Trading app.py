@@ -62,7 +62,7 @@ st.markdown("### 🧮 VIRTUAL WALLET LEDGER")
 c1, c2, c3 = st.columns(3)
 with c1: st.metric("💰 Wallet Bal", f"₹{ledger['wallet_balance']:.1f}")
 with c2: st.metric("🎯 Win Rate", f"{ledger['win_rate']}%")
-with col3: st.metric("🏁 Total Trade", f"{ledger['total_trades']}")
+with c3: st.metric("🏁 Total Trade", f"{ledger['total_trades']}")
 
 st.markdown("### 📋 RECENT TRADES HISTORY")
 if ledger['trades']:
