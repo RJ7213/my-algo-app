@@ -55,11 +55,13 @@ def start_backend_factory():
         if not api.generateSession(CID, PIN, tok)['status']: return
         cached_df = None
         while True:
-            now_dt = datetime.now() + timedelta(hours=5, minutes=30)
+            # 🎯 टाईमझोन फिक्स: प्युअर UTC वेळेत ५:३० तास वाढवून अचूक भारतीय वेळ (IST) काढणे
+            now_dt = datetime.utcnow() + timedelta(hours=5, minutes=30)
             is_open = (now_dt.weekday() < 5) and (datetime_time(9, 15) <= now_dt.time() <= datetime_time(15, 30))
             hist = manage_trade_history()
+            
             if not is_open:
-                out = {'live_spot': 24090.85, 'rsi_v': 25.79, 'ema9': 24145.80, 'nifty_status': '⏸️ Market Closed', 'rsi_status': 'LOCK', 'ema_status': 'LOCK', 'vol_status': 'LOCK', 'runway_status': 'LOCK', 'oi_status': 'LOCK', 'wall_status': 'LOCK', 'vol_val': '0x', 'runway_val': '0 pts', 'oi_val': '0x', 'depth_val': '0%', 'intraday_high': 24297.45, 'intraday_low': 24090.85, 'algo_reason': '💤 Sleep Mode Active.', 'signal_active': False, 'trade_type': 'NONE', 'entry_p': 0.0, 'sl_p': 0.0, 'target_p': 0.0, 'risk_cash': '₹2000', 'lots_suggested': '0', 'last_update': now_dt.strftime("%H:%M:%S")}
+                out = {'live_spot': 24090.85, 'rsi_v': 25.79, 'ema9': 24145.80, 'nifty_status': '⏸️ Market Closed', 'rsi_status': 'LOCK', 'ema_status': 'LOCK', 'vol_status': 'LOCK', 'runway_status': 'LOCK', 'oi_status': 'LOCK', 'wall_status': 'LOCK', 'vol_val': '0x', 'runway_val': '0 pts', 'oi_val': '0x', 'depth_val': '0%', 'intraday_high': 24297.45, 'intraday_low': 24090.85, 'algo_reason': f"💤 Sleep Mode Active. IST Time: {now_dt.strftime('%H:%M:%S')}", 'signal_active': False, 'trade_type': 'NONE', 'entry_p': 0.0, 'sl_p': 0.0, 'target_p': 0.0, 'risk_cash': '₹2000', 'lots_suggested': '0', 'last_update': now_dt.strftime("%H:%M:%S")}
                 with open('data_signal.json', 'w') as f: json.dump(out, f)
                 time.sleep(300); continue
             try:
@@ -76,13 +78,9 @@ def start_backend_factory():
                         high = float(df_t['high'].astype(float).max()) if not df_t.empty else 24297.45
                         low = float(df_t['low'].astype(float).min()) if not df_t.empty else 24090.85
                         act = next((t for t in hist['trades'] if t['status'] == 'ACTIVE'), None)
-                        
-                        # 🏃 चालू ट्रेडचे मॅनेजमेंट (प्रीमियम रायडिंग)
                         if act:
                             opt_res = api.ltpData("NFO", act['option_symbol'], act['option_token'])
                             prem = float(opt_res['data']['ltp']) if opt_res and opt_res.get('data') else act['entry']
-                            
-                            # 💎 ट्रेलिंग स्टॉपलॉस मेकॅनिझम (PNL Lock इंजिन) [Claim]
                             if prem >= act['target']: manage_trade_history(update_pnl={'status': 'TARGET_HIT', 'exit_price': act['target'], 'pnl': (act['target'] - act['entry']) * act['qty']})
                             elif prem <= act['sl']: manage_trade_history(update_pnl={'status': 'SL_HIT', 'exit_price': act['sl'], 'pnl': (act['sl'] - act['entry']) * act['qty']})
                             reason, all_p, rsi_st, ema_st, vol_st, runway_st, oi_st, wall_st, vol_ratio, run_df = "🏃 Jackpot Ride Active!", False, "LOCK", "LOCK", "LOCK", "LOCK", "LOCK", "LOCK", 1.0, 0.0
@@ -96,26 +94,19 @@ def start_backend_factory():
                             vol_st = "PASS" if float(df['volume'].iloc[-1]) >= float(df['vsma'].iloc[-1]) else "FAIL"
                             c_close = float(df['close'].iloc[-2]) if len(df) > 1 else spot
                             is_conf = (ttype == "CE_BUY" and c_close > 24203.0) or (ttype == "PE_BUY" and c_close < 24117.0)
-                            
-                            # 🎯 जॅकपॉट मॅपिंग नियम: टार्गेट फिक्स न ठेवता थेट पुढची मोठी 'स्ट्रक्चरल भिंत' निवडणे [Claim]
                             next_w = 24200.0 if spot < 24200 else high
                             run_df = abs(next_w - spot)
                             runway_st = "PASS" if (run_df >= 30 and is_conf) else "FAIL"
                             oi_st, wall_st = runway_st, "PASS"
                             all_p = (rsi_st == "PASS" and ema_st == "PASS" and vol_st == "PASS" and runway_st == "PASS")
-                            reason = f"⏸️ Side-ways (RSI: {rsi_v:.1f})" if ttype == "NONE" else f"🔍 Setup Formed for {ttype}"
-                            
+                            reason = f"⏸️ Side-ways (RSI: {rsi_v:.1f}). Analyzing Structure..." if ttype == "NONE" else f"🔍 Setup Formed for {ttype}"
                             if all_p:
                                 o_tok, o_sym = get_atm_option_token(spot, otype)
                                 o_ltp = api.ltpData("NFO", o_sym, o_tok)
                                 p_entry = float(o_ltp['data']['ltp']) if o_ltp and o_ltp.get('data') else 100.0
-                                
-                                # 🛡️ कडक नियम: १५ ते २५ पॉईंट्सचा लहान एसएल आणि जॅकपॉट ओपन टार्गेट [Claim]
                                 p_sl = p_entry - 15.0
-                                # जर रनवे मोठा असेल (उदा. ८० पॉईंट्स) तर ऑप्शन प्रीमियम टार्गेट आपोआप ४० पॉईंट्सवर (१:२ पेक्षा मोठे) सेट होईल! [Claim]
                                 premium_target_points = max(30.0, run_df * 0.50)
                                 p_targ = p_entry + premium_target_points
-                                
                                 lots = max(1, int(2000 / 15.0 / 75))
                                 manage_trade_history(new_trade={'time': now_dt.strftime("%H:%M:%S"), 'type': ttype, 'option_symbol': o_sym, 'option_token': o_tok, 'entry': p_entry, 'sl': p_sl, 'target': p_targ, 'target_dist': premium_target_points, 'qty': lots*75, 'status': 'ACTIVE'})
                                 reason = f"🎯 JACKPOT CALL PUNCHED! Target Distance: {premium_target_points:.1f} Premium Pts"
