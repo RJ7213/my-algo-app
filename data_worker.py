@@ -27,8 +27,7 @@ def manage_trade_history(new_trade=None, update_pnl=None):
         except: pass
     if dt['wallet_balance'] < 5000.0: dt['wallet_balance'] = 10000.0
     if new_trade:
-        dt['trades'].append(new_trade)
-        dt['total_trades'] = len(dt['trades'])
+        dt['trades'].append(new_trade); dt['total_trades'] = len(dt['trades'])
         with open(file_name, 'w') as f: json.dump(dt, f)
         return dt
     if update_pnl:
@@ -55,13 +54,13 @@ def start_backend_factory():
         if not api.generateSession(CID, PIN, tok)['status']: return
         cached_df = None
         while True:
-            # 🎯 टाईमझोन फिक्स: प्युअर UTC वेळेत ५:३० तास वाढवून अचूक भारतीय वेळ (IST) काढणे
+            # 🕒 अचूक युटीसी + ५:३० तास भारतीय प्रमाणवेळ (IST) [Friday, Aug 28, 2026, 10:58 AM]
             now_dt = datetime.utcnow() + timedelta(hours=5, minutes=30)
             is_open = (now_dt.weekday() < 5) and (datetime_time(9, 15) <= now_dt.time() <= datetime_time(15, 30))
             hist = manage_trade_history()
             
             if not is_open:
-                out = {'live_spot': 24090.85, 'rsi_v': 25.79, 'ema9': 24145.80, 'nifty_status': '⏸️ Market Closed', 'rsi_status': 'LOCK', 'ema_status': 'LOCK', 'vol_status': 'LOCK', 'runway_status': 'LOCK', 'oi_status': 'LOCK', 'wall_status': 'LOCK', 'vol_val': '0x', 'runway_val': '0 pts', 'oi_val': '0x', 'depth_val': '0%', 'intraday_high': 24297.45, 'intraday_low': 24090.85, 'algo_reason': f"💤 Sleep Mode Active. IST Time: {now_dt.strftime('%H:%M:%S')}", 'signal_active': False, 'trade_type': 'NONE', 'entry_p': 0.0, 'sl_p': 0.0, 'target_p': 0.0, 'risk_cash': '₹2000', 'lots_suggested': '0', 'last_update': now_dt.strftime("%H:%M:%S")}
+                out = {'live_spot': 24090.85, 'rsi_v': 25.79, 'ema9': 24145.80, 'nifty_status': '⏸️ Market Closed', 'rsi_status': 'LOCK', 'ema_status': 'LOCK', 'vol_status': 'LOCK', 'runway_status': 'LOCK', 'oi_status': 'LOCK', 'wall_status': 'LOCK', 'vol_val': '0x', 'runway_val': '0 pts', 'oi_val': '0x', 'depth_val': '0%', 'intraday_high': 24297.45, 'intraday_low': 24090.85, 'algo_reason': '💤 Safe Sleep Mode Active.', 'signal_active': False, 'trade_type': 'NONE', 'entry_p': 0.0, 'sl_p': 0.0, 'target_p': 0.0, 'risk_cash': '₹2000', 'lots_suggested': '0', 'last_update': now_dt.strftime("%H:%M:%S")}
                 with open('data_signal.json', 'w') as f: json.dump(out, f)
                 time.sleep(300); continue
             try:
@@ -78,6 +77,7 @@ def start_backend_factory():
                         high = float(df_t['high'].astype(float).max()) if not df_t.empty else 24297.45
                         low = float(df_t['low'].astype(float).min()) if not df_t.empty else 24090.85
                         act = next((t for t in hist['trades'] if t['status'] == 'ACTIVE'), None)
+                        
                         if act:
                             opt_res = api.ltpData("NFO", act['option_symbol'], act['option_token'])
                             prem = float(opt_res['data']['ltp']) if opt_res and opt_res.get('data') else act['entry']
@@ -92,6 +92,7 @@ def start_backend_factory():
                             df['vsma'] = df['volume'].astype(float).rolling(20, min_periods=1).mean()
                             vol_ratio = round(float(df['volume'].iloc[-1]) / float(df['vsma'].iloc[-1]), 1)
                             vol_st = "PASS" if float(df['volume'].iloc[-1]) >= float(df['vsma'].iloc[-1]) else "FAIL"
+                            
                             c_close = float(df['close'].iloc[-2]) if len(df) > 1 else spot
                             is_conf = (ttype == "CE_BUY" and c_close > 24203.0) or (ttype == "PE_BUY" and c_close < 24117.0)
                             next_w = 24200.0 if spot < 24200 else high
@@ -100,6 +101,7 @@ def start_backend_factory():
                             oi_st, wall_st = runway_st, "PASS"
                             all_p = (rsi_st == "PASS" and ema_st == "PASS" and vol_st == "PASS" and runway_st == "PASS")
                             reason = f"⏸️ Side-ways (RSI: {rsi_v:.1f}). Analyzing Structure..." if ttype == "NONE" else f"🔍 Setup Formed for {ttype}"
+                            
                             if all_p:
                                 o_tok, o_sym = get_atm_option_token(spot, otype)
                                 o_ltp = api.ltpData("NFO", o_sym, o_tok)
@@ -108,9 +110,12 @@ def start_backend_factory():
                                 premium_target_points = max(30.0, run_df * 0.50)
                                 p_targ = p_entry + premium_target_points
                                 lots = max(1, int(2000 / 15.0 / 75))
-                                manage_trade_history(new_trade={'time': now_dt.strftime("%H:%M:%S"), 'type': ttype, 'option_symbol': o_sym, 'option_token': o_tok, 'entry': p_entry, 'sl': p_sl, 'target': p_targ, 'target_dist': premium_target_points, 'qty': lots*75, 'status': 'ACTIVE'})
+                                manage_trade_history(new_trade={'time': now_dt.strftime("%H:%M:%S"), 'type': ttype, 'option_symbol': o_sym, 'option_token': o_tok, 'entry': p_entry, 'sl': p_sl, 'target': p_targ, 'target_dist': premium_target_points, 'qty': lots*75, 'status': 'ACTIVE', 'exit_price': 0.0, 'pnl_realized': 0.0})
                                 reason = f"🎯 JACKPOT CALL PUNCHED! Target Distance: {premium_target_points:.1f} Premium Pts"
+                        
                         with open('data_signal.json', 'w') as f: json.dump({'live_spot': spot, 'rsi_v': rsi_v, 'ema9': ema9, 'nifty_status': '🟢 Active', 'rsi_status': rsi_st, 'ema_status': ema_st, 'vol_status': vol_st, 'runway_status': runway_st, 'oi_status': oi_st, 'wall_status': wall_st, 'vol_val': f"{vol_ratio}x SMA", 'runway_val': f"{run_df:.1f} pts", 'oi_val': "1.8x", 'depth_val': "62%", 'intraday_high': high, 'intraday_low': low, 'algo_reason': reason, 'signal_active': act is not None, 'last_update': now_dt.strftime("%H:%M:%S")}, f)
             except: pass
             time.sleep(3)
     except: time.sleep(10); start_backend_factory()
+
+if __name__ == "__main__": start_backend_factory()
