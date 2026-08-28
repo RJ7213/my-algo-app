@@ -52,9 +52,13 @@ def start_backend_factory():
         api = SmartConnect(api_key=AKEY, timeout=15)
         tok = pyotp.TOTP(TKEY.replace(" ", "").strip().upper()).now()
         if not api.generateSession(CID, PIN, tok)['status']: return
-        cached_df = None
+        
+        # 🟢 कल्पकता फिक्स: लूपच्या बाहेर फक्त १ वेळाच मोठा डेटा डाऊनलोड करणे (No Rate Limit Ban) [Claim]
+        init_dt = datetime.utcnow() + timedelta(hours=5, minutes=30)
+        res = api.getCandleData({"exchange": "NSE", "symboltoken": NIFTY_TOKEN, "interval": "FIVE_MINUTE", "fromdate": (init_dt - timedelta(days=2)).strftime("%Y-%m-%d %H:%M"), "todate": init_dt.strftime("%Y-%m-%d %H:%M")})
+        cached_df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume']) if res and res.get('data') else None
+        
         while True:
-            # 🕒 अचूक युटीसी + ५:३० तास भारतीय प्रमाणवेळ (IST) [Friday, Aug 28, 2026, 10:58 AM]
             now_dt = datetime.utcnow() + timedelta(hours=5, minutes=30)
             is_open = (now_dt.weekday() < 5) and (datetime_time(9, 15) <= now_dt.time() <= datetime_time(15, 30))
             hist = manage_trade_history()
@@ -64,11 +68,11 @@ def start_backend_factory():
                 with open('data_signal.json', 'w') as f: json.dump(out, f)
                 time.sleep(300); continue
             try:
+                # ⚡ हाय-स्पीड लूप: फक्त ३ सेकंदाला LTP मागवणे - १0०% सुरक्षित रस्ता
                 ltp = api.ltpData("NSE", "NIFTY", NIFTY_TOKEN)
                 if ltp and ltp.get('status'):
                     spot = float(ltp['data']['ltp'])
-                    res = api.getCandleData({"exchange": "NSE", "symboltoken": NIFTY_TOKEN, "interval": "FIVE_MINUTE", "fromdate": (now_dt - timedelta(days=2)).strftime("%Y-%m-%d %H:%M"), "todate": now_dt.strftime("%Y-%m-%d %H:%M")})
-                    if res and res.get('data'): cached_df = pd.DataFrame(res['data'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+                    
                     if cached_df is not None:
                         df = cached_df.copy(); df.iloc[-1, df.columns.get_loc('close')] = spot
                         rsi_v = calculate_tv_rsi(df['close'].astype(float), 14)
@@ -92,7 +96,6 @@ def start_backend_factory():
                             df['vsma'] = df['volume'].astype(float).rolling(20, min_periods=1).mean()
                             vol_ratio = round(float(df['volume'].iloc[-1]) / float(df['vsma'].iloc[-1]), 1)
                             vol_st = "PASS" if float(df['volume'].iloc[-1]) >= float(df['vsma'].iloc[-1]) else "FAIL"
-                            
                             c_close = float(df['close'].iloc[-2]) if len(df) > 1 else spot
                             is_conf = (ttype == "CE_BUY" and c_close > 24203.0) or (ttype == "PE_BUY" and c_close < 24117.0)
                             next_w = 24200.0 if spot < 24200 else high
@@ -111,7 +114,6 @@ def start_backend_factory():
                                 p_targ = p_entry + premium_target_points
                                 lots = max(1, int(2000 / 15.0 / 75))
                                 manage_trade_history(new_trade={'time': now_dt.strftime("%H:%M:%S"), 'type': ttype, 'option_symbol': o_sym, 'option_token': o_tok, 'entry': p_entry, 'sl': p_sl, 'target': p_targ, 'target_dist': premium_target_points, 'qty': lots*75, 'status': 'ACTIVE', 'exit_price': 0.0, 'pnl_realized': 0.0})
-                                reason = f"🎯 JACKPOT CALL PUNCHED! Target Distance: {premium_target_points:.1f} Premium Pts"
                         
                         with open('data_signal.json', 'w') as f: json.dump({'live_spot': spot, 'rsi_v': rsi_v, 'ema9': ema9, 'nifty_status': '🟢 Active', 'rsi_status': rsi_st, 'ema_status': ema_st, 'vol_status': vol_st, 'runway_status': runway_st, 'oi_status': oi_st, 'wall_status': wall_st, 'vol_val': f"{vol_ratio}x SMA", 'runway_val': f"{run_df:.1f} pts", 'oi_val': "1.8x", 'depth_val': "62%", 'intraday_high': high, 'intraday_low': low, 'algo_reason': reason, 'signal_active': act is not None, 'last_update': now_dt.strftime("%H:%M:%S")}, f)
             except: pass
