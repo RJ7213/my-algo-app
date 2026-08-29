@@ -1,4 +1,4 @@
-# Trading app.py - भाग १
+# Trading app.py
 import time, json, os
 import streamlit as st
 import streamlit.components.v1 as components
@@ -7,17 +7,17 @@ import pandas as pd
 st.set_page_config(page_title="NIFTY LEDGER", page_icon="⚡", layout="centered")
 st.markdown("<style>.main .block-container { padding: 0.5rem !important; max-width: 440px !important; }</style>", unsafe_allow_html=True)
 
-# ४-इंजिन रचनेनुसार लोड मुक्त सरळ वाचन मेकॅनिझम [Claim]
+# लोड मुक्त सरळ वाचन मेकॅनिझम
 raw = json.load(open('data_raw.json')) if os.path.exists('data_raw.json') else {'live_spot': 24099.60, 'last_update': '00:00:00'}
 p_dt = json.load(open('paper_signal.json')) if os.path.exists('paper_signal.json') else {'rsi_v':40.4,'ema9':24147.88,'rsi_status':'FAIL','ema_status':'FAIL','vol_status':'FAIL','runway_status':'FAIL','vol_val':'1.0x','runway_val':'0 pts','intraday_high':24188.30,'intraday_low':24076.85,'algo_reason':'Processing Live Architecture...','signal_active':False,'active_trade_symbol':'NONE'}
 ledger = json.load(open('trade_history.json')) if os.path.exists('trade_history.json') else {'wallet_balance': 10000.0, 'trades': [], 'total_trades': 0, 'target_hits': 0, 'sl_hits': 0, 'win_rate': 0.0}
 
 st.info(f"📊 NIFTY 50: 🟢 Active | 🕒 TS: {raw.get('last_update')}")
 def map_pf(s): return '<span style="color:#00e676;font-weight:bold;">[✓ PASS]</span>' if s == "PASS" else '<span style="color:#ff5252;font-weight:bold;">[💡 LOCK]</span>'
-# Trading app.py - भाग २
+
 trade_card_html = ""
 if p_dt.get('signal_active'):
-    trade_card_html = f"""<div style="background:#00e67615; border:2px solid #00e676; padding:10px; border-radius:12px; color:white; font-family:sans-serif; margin-top:10px; font-size:12px;">🚀 <b>ACTIVE POSITION:</b> {p_dt.get('active_trade_symbol')} | 2% Capital Protection Ride Active!</div>"""
+    trade_card_html = f"""<div style="background:#00e67615; border:2px solid #00e676; padding:10px; border-radius:12px; color:white; font-family:sans-serif; margin-top:10px; font-size:12px;">🚀 <b>ACTIVE POSITION:</b> {p_dt.get('active_trade_symbol')} | 15% Capital Protection Ride Active!</div>"""
 
 dhan_html = f"""
 <div style="background-color:#060814; padding:15px; border-radius:12px; color:white; border: 1px solid #1c2136; font-family:sans-serif; line-height: 1.4; height: 500px;">
