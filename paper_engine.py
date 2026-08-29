@@ -44,40 +44,43 @@ def start_paper_engine():
             
             act = next((t for t in hist['trades'] if t['status'] == 'ACTIVE'), None)
             
-            # 🏃 १. चालू असलेल्या जॅकपॉट ट्रेडचे ट्रॅकिंग करणे
             if act:
-                # इंडेक्स लेव्हल स्ट्रक्चरनुसार प्रीमियम रायडिंग ट्रॅकर [Claim]
                 if spot >= act['index_target'] if act['type']=="CE_BUY" else spot <= act['index_target']:
                     pnl_calc = act['target_dist'] * act['qty']
                     manage_ledger(update_pnl={'status': 'TARGET_HIT', 'exit_price': act['target'], 'pnl': pnl_calc})
                 elif spot <= act['index_sl'] if act['type']=="CE_BUY" else spot >= act['index_sl']:
-                    pnl_calc = -15.0 * act['qty']
+                    pnl_calc = -act['sl_dist'] * act['qty']
                     manage_ledger(update_pnl={'status': 'SL_HIT', 'exit_price': act['sl'], 'pnl': pnl_calc})
             else:
-                # 🎯 २. नवीन ट्रेड एक्झिक्युशन (जेव्हा इंजिन २ए कडून होकार मिळेल) [Claim]
                 if strat['signal_triggered']:
                     strike = int(round(spot / 50) * 50)
                     o_sym = f"NIFTY {strike} {strat['otype']}"
                     
-                    p_entry = 100.0 # सेफ व्हर्च्युअल बेस प्रीमियम भाव
-                    p_sl = p_entry - 15.0 # १५ पॉईंट्सचा कडक प्रीमियम SL [Claim]
+                    # 💎 कडक नियम: मार्केट स्ट्रक्चरनुसार इंडेक्स कँडलवरून प्रीमियम एसएल अंतर मोजणे [Claim]
+                    idx_sl_dist = abs(spot - (strat['c_low'] if strat['otype']=="CE" else strat['c_high']))
+                    p_sl_dist = max(10.0, min(idx_sl_dist * 0.50, 25.0)) # ऑप्शन प्रीमियम स्ट्रक्चरल एसएल [Claim]
                     
-                    # 💎 जॅकपॉट ओपन टार्गेट रायडिंग फॉर्म्युला [Claim]
+                    # 🚨 २% कॅपिटल कॅप लॉक नियम (₹१०,000 वॉलेटनुसार मॅक्स ₹२०० रिस्क) [Claim]
+                    max_allowed_risk = hist['wallet_balance'] * 0.02
+                    calculated_qty = int(max_allowed_risk / p_sl_dist)
+                    qty_final = max(75, int(calculated_qty / 75) * 75) # कमीत कमी १ लॉट (७५ Qty)
+                    
+                    p_entry = 100.0
+                    p_sl = p_entry - p_sl_dist
                     premium_target_points = max(30.0, strat['run_df'] * 0.50)
                     p_targ = p_entry + premium_target_points
                     
-                    lots = max(1, int(2000 / 15.0 / 75)) # ₹२००० मॅक्स रिस्क गणित
-                    
-                    manage_ledger(new_t={
-                        'time': now_dt.strftime("%H:%M:%S"), 'type': strat['trade_type'], 
-                        'option_symbol': o_sym, 'option_token': "142500", 'entry': p_entry, 
-                        'sl': p_sl, 'target': p_targ, 'target_dist': premium_target_points, 
-                        'index_entry': spot, 'index_sl': spot-20 if strat['otype']=="CE" else spot+20, 
-                        'index_target': strat['next_w'], 'qty': lots*75, 'status': 'ACTIVE', 
-                        'exit_price': 0.0, 'pnl_realized': 0.0
-                    })
+                    # जर एकूण ट्रेड रिस्क २% पेक्षा जास्त जात असेल तर ट्रेड फिल्टर लॉक करणे [Claim]
+                    if (p_sl_dist * qty_final) <= (max_allowed_risk + 50.0):
+                        manage_ledger(new_t={
+                            'time': now_dt.strftime("%H:%M:%S"), 'type': strat['trade_type'], 
+                            'option_symbol': o_sym, 'option_token': "142500", 'entry': p_entry, 
+                            'sl': p_sl, 'target': p_targ, 'target_dist': premium_target_points, 'sl_dist': p_sl_dist,
+                            'index_entry': spot, 'index_sl': strat['c_low'] if strat['otype']=="CE" else strat['c_high'], 
+                            'index_target': strat['next_w'], 'qty': qty_final, 'status': 'ACTIVE', 
+                            'exit_price': 0.0, 'pnl_realized': 0.0
+                        })
             
-            # डॅशबोर्डसाठी फायनल सिग्नल्स एकत्र करून स्वतंत्र फाईल लिहिणे
             hist_latest = manage_ledger()
             current_act = next((t for t in hist_latest['trades'] if t['status'] == 'ACTIVE'), None)
             
@@ -87,7 +90,7 @@ def start_paper_engine():
                     'vol_status': strat['vol_status'], 'runway_status': strat['runway_status'], 
                     'vol_val': strat['vol_val'], 'runway_val': strat['runway_val'], 
                     'intraday_high': strat['intraday_high'], 'intraday_low': strat['intraday_low'], 
-                    'algo_reason': f"🚀 JACKPOT POSITION ACTIVE: {current_act['option_symbol']}!" if current_act else strat['algo_reason'], 
+                    'algo_reason': f"🚀 JACKPOT STRUCURAL POSITION ACTIVE: {current_act['option_symbol']}!" if current_act else strat['algo_reason'], 
                     'signal_active': current_act is not None, 
                     'active_trade_symbol': current_act['option_symbol'] if current_act else 'NONE'
                 }, f)
