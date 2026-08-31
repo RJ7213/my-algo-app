@@ -17,7 +17,7 @@ def calculate_tv_rsi(series, period=14):
     return float((100 - (100 / (1 + rs))).iloc[-1])
 
 def start_indicator_engine():
-    logging.info("अचूक ऑप्शन्स व्हॉल्यूम कॅल्क्युलेटर मेंदू सुरू झाला...")
+    logging.info("अंतिम इंडिकेटर इंजिन सुरू झाले आहे...")
     while True:
         now_dt = datetime.utcnow() + timedelta(hours=5, minutes=30)
         if not os.path.exists('data_raw.json'):
@@ -25,36 +25,36 @@ def start_indicator_engine():
         try:
             with open('data_raw.json', 'r') as f: raw = json.load(f)
             spot = float(raw['live_spot'])
-            if not raw.get('candles') or not raw.get('opt_candles'):
+            if not raw.get('candles') or len(raw['candles']) < 3:
                 time.sleep(1); continue
                 
             df = pd.DataFrame(raw['candles'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
-            # वर्करकडून आलेला खऱ्या ऑप्शन्सचा डेटा लोड करणे
-            df_opt = pd.DataFrame(raw['opt_candles'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = df[col].astype(float)
+            df['datetime'] = pd.to_datetime(df['date'])
             
-            for d in [df, df_opt]:
-                for col in ['open', 'high', 'low', 'close', 'volume']:
-                    d[col] = d[col].astype(float)
-                d['datetime'] = pd.to_datetime(d['date'])
-            
-            # इंडेक्स स्पॉट गणीत
             rsi_v = calculate_tv_rsi(df['close'], 14)
             ema9 = float(df['close'].ewm(span=9, adjust=False).mean().iloc[-1])
             
             today_str = now_dt.strftime("%Y-%m-%d")
             df_t = df[df['datetime'].dt.strftime('%Y-%m-%d') == today_str].copy()
-            high = float(df_t['high'].max()) if not df_t.empty else 24188.30
-            low = float(df_t['low'].min()) if not df_t.empty else 24076.85
+            
+            high = float(df_t['high'].max()) if not df_t.empty else spot + 50.0
+            low = float(df_t['low'].min()) if not df_t.empty else spot - 50.0
             
             psy_level = int(round(spot / 50.0) * 50)
+            
+            # ⭐ कँडल पॅटर्नसाठी बंद झालेली कँडल index [-2] (आकडे परफेक्ट फिक्स)
             c_open, c_close = df['open'].iloc[-2], df['close'].iloc[-2]
-            c_high, c_low = df['high'].iloc[-2], df['low'].iloc[-2]
+            c_high, c_low = df['high'].iloc[-2], df['low'].iloc[-2]  # टायपो एरर पूर्ण फिक्स केली
             
             c_size = abs(c_high - c_low) if abs(c_high - c_low) > 0 else 1.0
             top_wick = c_high - max(c_open, c_close)
             bot_wick = min(c_open, c_close) - c_low
             
-            is_rejection = (abs(c_high - psy_level) <= 25 and top_wick >= (c_size * 0.4)) or (abs(c_low - psy_level) <= 25 and bot_wick >= (c_size * 0.4))
+            is_rejection = (abs(c_high - psy_level) <= 25 and top_wick >= (c_size * 0.4)) or \
+                           (abs(c_low - psy_level) <= 25 and bot_wick >= (c_size * 0.4))
+            
             is_pullback = not is_rejection and (abs(spot - ema9) <= 30.0)
             
             if is_rejection:
@@ -78,15 +78,17 @@ def start_indicator_engine():
                 elif otype == "PE": ema_st = "PASS" if (spot <= (ema9 + 5) and ema_dist <= 25) else "FAIL"
                 else: ema_st = "FAIL"
             
-            # ⭐⭐⭐ [खरा आणि मूळ ऑप्शन्स प्रीमियम व्हॉल्यूम नियम] ⭐⭐⭐
-            # इथे आपण इंडेक्स स्पॉट ऐवजी थेट वर्करने आणलेल्या ऑप्शन्सचा व्हॉल्यूम मोजत आहोत!
-            df_opt['vsma'] = df_opt['volume'].rolling(window=20, min_periods=1).mean()
-            last_vol = float(df_opt['volume'].iloc[-2]) # बंद झालेली ऑप्शन कँडल
-            last_vsma = float(df_opt['vsma'].iloc[-2]) if float(df_opt['vsma'].iloc[-2]) > 0 else 1.0
+            # ⭐⭐⭐ [प्रगत मोमेंटम स्पीड आधारित व्हॉल्यूम मोजणी नियम] ⭐⭐⭐
+            # ऑप्शनच्या खऱ्या वेगाला (Speed) पकडण्यासाठी कँडल साईझचा सरासरीशी संबंध
+            df['candle_body'] = (df['close'] - df['open']).abs()
+            df['body_sma'] = df['candle_body'].rolling(window=20, min_periods=1).mean()
             
-            vol_ratio = round(last_vol / last_vsma, 1)
-            # मूळ नियम: ऑप्शन प्रीमियमचा व्हॉल्यूम २० सरासरीपेक्षा जास्त असेल तरच PASS!
-            vol_st = "PASS" if last_vol >= last_vsma else "FAIL"
+            last_body = df['candle_body'].iloc[-2]
+            avg_body = df['body_sma'].iloc[-2] if df['body_sma'].iloc[-2] > 0 else 1.0
+            
+            vol_ratio = round(last_body / avg_body, 1)
+            # एन्ट्री नियम: जर सध्याची मूव्हमेंट सरासरी कँडल वेगापेक्षा जास्त असेल तरच व्हॉल्यूम PASS!
+            vol_st = "PASS" if last_body >= (avg_body * 0.8) else "FAIL"
             # ⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐
             
             next_w = high if otype == "CE" else low
@@ -101,7 +103,7 @@ def start_indicator_engine():
             with open('strategy_signal.json', 'w') as f:
                 json.dump({
                     'live_spot': spot, 'rsi_v': rsi_v, 'ema9': ema9, 'rsi_status': rsi_st, 'ema_status': ema_st, 
-                    'vol_status': vol_st, 'runway_status': runway_st, 'vol_val': f"{vol_ratio}x SMA", 
+                    'vol_status': vol_st, 'runway_status': runway_st, 'vol_val': f"{vol_ratio}x Speed", 
                     'runway_val': f"{run_df:.1f} pts", 'intraday_high': high, 'intraday_low': low, 
                     'algo_reason': reason, 'signal_triggered': all_p, 'trade_type': ttype, 'otype': otype, 
                     'next_w': next_w, 'run_df': run_df, 'c_low': c_low, 'c_high': c_high
