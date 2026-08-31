@@ -35,6 +35,7 @@ def start_indicator_engine():
             
             rsi_v = calculate_tv_rsi(df['close'], 14)
             ema9 = float(df['close'].ewm(span=9, adjust=False).mean().iloc[-1])
+            ema20 = float(df['close'].ewm(span=20, adjust=False).mean().iloc[-1])
             
             today_str = now_dt.strftime("%Y-%m-%d")
             df_t = df[df['datetime'].dt.strftime('%Y-%m-%d') == today_str].copy()
@@ -88,8 +89,9 @@ def start_indicator_engine():
                 
             ttype = f"{otype}_BUY" if otype != "NONE" else "NONE"
             
-            vol_ratio = round(c_size / 15.0, 1)
-            vol_st = "PASS" if is_candle_size_valid else "FAIL"
+            vol_avg = float(df['volume'].iloc[-22:-2].mean()) if len(df) >= 22 else 0.0
+            vol_ratio = round(float(df['volume'].iloc[-2]) / vol_avg, 2) if vol_avg > 0 else 0.0
+            vol_st = "PASS" if (vol_ratio >= 1.20) else "FAIL"
             
             run_df = abs((high if otype == "CE" else low) - spot)
             runway_st = "PASS" if (run_df >= 15.0) else "FAIL"
@@ -107,11 +109,12 @@ def start_indicator_engine():
                 
             with open('strategy_signal.json', 'w') as f:
                 json.dump({
-                    'live_spot': spot, 'rsi_v': rsi_v, 'ema9': ema9, 'rsi_status': rsi_st, 'ema_status': ema_st, 
+                    'live_spot': spot, 'rsi_v': rsi_v, 'ema9': ema9, 'ema20': ema20, 'rsi_status': rsi_st, 'ema_status': ema_st, 
                     'vol_status': vol_st, 'runway_status': runway_st, 'vol_val': f"{vol_ratio}x Size", 
                     'runway_val': f"{run_df:.1f} pts", 'intraday_high': high, 'intraday_low': low, 
                     'algo_reason': reason, 'signal_triggered': final_trigger, 'trade_type': ttype, 'otype': otype, 
                     'next_w': high if otype == "CE" else low, 'run_df': run_df, 'c_low': c_low, 'c_high': c_high,
+                    'option_strike': int(round(spot / 50.0) * 50),
                     'strategy_used': setup_name, 'candle_time': current_candle_time
                 }, f)
         except Exception as err: pass
