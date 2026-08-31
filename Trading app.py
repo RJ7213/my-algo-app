@@ -6,7 +6,7 @@ import pandas as pd
 
 st.set_page_config(page_title="NIFTY LEDGER PRO", page_icon="⚡", layout="centered")
 
-# --- मोबाईल मेमरी सुरक्षित स्टोरेज अल्गोरिदम (LocalStorage) ---
+# --- ⭐ मोबाईल मेमरी सुरक्षित स्टोरेज अल्गोरिदम (LocalStorage) ---
 js_storage_script = """
 <script>
     function syncDeviceMemory() {
@@ -26,25 +26,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# डिफॉल्ट बॅकअप व्हॅल्यूज
-fallback_dt = {'rsi_v':40.4,'ema9':24147.88,'rsi_status':'FAIL','ema_status':'FAIL','vol_status':'FAIL','runway_status':'FAIL','vol_val':'1.0x','runway_val':'0 pts','intraday_high':24188.30,'intraday_low':24076.85,'algo_reason':'Processing Live Architecture...','signal_active':False,'active_trade_symbol':'NONE'}
-
+# ४-इंजिन रचनेनुसार लोड मुक्त सरळ वाचन मेकॅनिझम
 raw = json.load(open('data_raw.json')) if os.path.exists('data_raw.json') else {'live_spot': 24064.15, 'last_update': '00:00:00'}
-
-# ⭐⭐⭐ [JSONDecodeError फिक्स करण्यासाठी कडक सेफ गार्ड] ⭐⭐⭐
-# जर फाईल अर्धवट लिहिलेली असेल तर ॲप क्रॅश न होता जुना डेटा स्क्रीनवर धरून ठेवेल
-p_dt = fallback_dt
-if os.path.exists('strategy_signal.json'):
-    try:
-        with open('strategy_signal.json', 'r') as f:
-            p_dt = json.load(f)
-    except Exception:
-        # फाईल वाचताना एरर आल्यास आधीचा सेव्ह केलेला बॅकअप लोड करणे
-        p_dt = json.load(open('paper_signal.json')) if os.path.exists('paper_signal.json') else fallback_dt
-# ⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐
-
+p_dt = json.load(open('strategy_signal.json')) if os.path.exists('strategy_signal.json') else {'rsi_v':40.4,'ema9':24147.88,'rsi_status':'FAIL','ema_status':'FAIL','vol_status':'FAIL','runway_status':'FAIL','vol_val':'1.0x','runway_val':'0 pts','intraday_high':24188.30,'intraday_low':24076.85,'algo_reason':'Processing Live Architecture...','signal_active':False,'active_trade_symbol':'NONE'}
 ledger = json.load(open('trade_history.json')) if os.path.exists('trade_history.json') else {'wallet_balance': 10000.0, 'trades': [], 'total_trades': 0, 'target_hits': 0, 'sl_hits': 0, 'win_rate': 0.0}
 
+# मोबाईल मेमरी बॅकअप रिकव्हरी
 if 'device_sync_done' not in st.session_state:
     st.session_state['device_sync_done'] = True
     if len(ledger['trades']) == 0 and os.path.exists('device_backup.json'):
@@ -60,29 +47,45 @@ def map_pf(s): return '<span style="color:#00e676; font-weight:bold;">[✓ PASS]
 
 vol_val_display = p_dt.get('vol_val') if p_dt.get('vol_val') else "1.0x Speed"
 
-current_act = next((t for t in ledger['trades'] if t['status'] == 'ACTIVE'), None)
+# ⭐⭐⭐ ACTUAL OPTION-LTP RUNNING P&L ⭐⭐⭐
+current_act = next((t for t in ledger["trades"] if t.get("status") == "ACTIVE"), None)
 trade_card_html = ""
 if current_act:
-    spot_now = float(raw['live_spot'])
-    idx_entry = float(current_act['index_entry'])
-    pts_move = (spot_now - idx_entry) if "CE_BUY" in current_act['type'] else (idx_entry - spot_now)
-    running_pnl = round(pts_move * 0.50 * int(current_act['qty']), 1)
-    
+    spot_now = float(raw.get("live_spot", current_act.get("index_entry", 0)))
+    option_quote = raw.get("option_quote") or {}
+    current_option_ltp = None
+    if option_quote.get("tradingsymbol") == current_act.get("option_symbol"):
+        try:
+            current_option_ltp = float(option_quote.get("ltp"))
+        except (TypeError, ValueError):
+            current_option_ltp = None
+
+    if current_option_ltp is not None:
+        running_pnl = round((current_option_ltp - float(current_act["entry"])) * int(current_act["qty"]), 2)
+        ltp_display = f"₹{current_option_ltp:.2f}"
+    else:
+        running_pnl = float(current_act.get("running_pnl", 0.0))
+        ltp_display = "WAITING"
+
     pnl_color = "#00e676" if running_pnl >= 0 else "#ff5252"
     pnl_bg = "#00e67610" if running_pnl >= 0 else "#ff525210"
     pnl_sign = "+" if running_pnl >= 0 else ""
-    
+
     trade_card_html = f"""
     <div style="background:{pnl_bg}; border:2px dashed {pnl_color}; padding:12px; border-radius:14px; color:white; font-family:sans-serif; margin-top:12px; text-align:center;">
-        <span style="font-size:11px; color:#8f96a3; text-transform:uppercase;">⚡ LIVE RUNNING POSITION ⚡</span>
-        <h2 style="margin:4px 0; font-size:22px; color:{pnl_color}; font-weight:bold;">{current_act['option_symbol']}</h2>
+        <span style="font-size:11px; color:#8f96a3; text-transform:uppercase;">⚡ LIVE PAPER POSITION — ACTUAL OPTION LTP</span>
+        <h2 style="margin:4px 0; font-size:22px; color:{pnl_color};">{current_act.get('option_symbol','N/A')}</h2>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:11px; color:#b0b6c6; margin:6px 0;">
-            <div>🛒 Entry: <b>₹{current_act['entry']:.1f}</b> (Qty: {current_act['qty']})</div>
-            <div>🎯 Target: <b style="color:#00e676;">₹{current_act['target']:.1f}</b></div>
+            <div>🛒 Entry: <b>₹{float(current_act.get('entry',0)):.2f}</b></div>
+            <div>📡 Current: <b>{ltp_display}</b></div>
         </div>
-        <div style="font-size:11px; color:#b0b6c6; margin-bottom:6px;">🛡️ Stop Loss: <b style="color:#ff5252;">₹{current_act['sl']:.1f}</b></div>
-        <div style="background:rgba(255,255,255,0.03); padding:6px; border-radius:8px; border:1px solid rgba(255,255,255,0.05);">
-            <h1 style="margin:2px 0; font-size:28px; color:{pnl_color}; font-weight:bold;">₹{pnl_sign}{running_pnl}</h1>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:11px; color:#b0b6c6;">
+            <div>🎯 Target: <b style="color:#00e676;">₹{float(current_act.get('target',0)):.2f}</b></div>
+            <div>🛡️ SL: <b style="color:#ff5252;">₹{float(current_act.get('sl',0)):.2f}</b></div>
+        </div>
+        <div style="background:rgba(255,255,255,0.03); padding:6px; border-radius:8px; margin-top:8px;">
+            <span style="font-size:10px; color:#8f96a3;">RUNNING P&L</span>
+            <h1 style="margin:2px 0; font-size:28px; color:{pnl_color};">₹{pnl_sign}{running_pnl:.2f}</h1>
         </div>
     </div>"""
 
@@ -111,6 +114,7 @@ dhan_html = f"""
 </div>"""
 components.html(dhan_html, height=520, scrolling=False)
 
+# ब्राऊझर लोकल स्टोरेज सिंक विजेट
 js_save_payload = f"""<script>localStorage.setItem('nifty_trade_history', '{json.dumps(ledger)}');</script>"""
 components.html(js_storage_script + js_save_payload, height=0)
 
@@ -124,6 +128,7 @@ with c1: st.metric("💰 Wallet Bal", f"₹{ledger['wallet_balance']:.1f}")
 with c2: st.metric("🎯 Win Rate", f"{ledger['win_rate']}%")
 with c3: st.metric("🏁 Total Trade", f"{ledger['total_trades']}")
 
+# 📋 अनालिसिस टेबल (सर्व कॉलम्ससह - Target, SL, P&L परफेक्ट रिस्टोअर केले)
 st.markdown("### 📋 RECENT TRADES HISTORY")
 if ledger['trades']:
     df_history = pd.DataFrame(ledger['trades']).tail(10)
@@ -137,4 +142,16 @@ if ledger['trades']:
                  })
 else:
     st.caption("⏳ No trades recorded yet. Waiting for market setup...")
+
+# Strategy performance summary
+if ledger.get('trades'):
+    st.markdown("### 📊 STRATEGY PERFORMANCE")
+    hist_df = pd.DataFrame(ledger['trades'])
+    if 'strategy_used' in hist_df.columns:
+        summary = hist_df.groupby('strategy_used').agg(Trades=('status','count')).reset_index()
+        if 'pnl_realized' in hist_df.columns:
+            pnl_map = hist_df.groupby('strategy_used')['pnl_realized'].sum().reset_index(name='P&L')
+            summary = summary.merge(pnl_map, on='strategy_used', how='left')
+        st.dataframe(summary, use_container_width=True, hide_index=True)
+
 time.sleep(2); st.rerun()
