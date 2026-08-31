@@ -50,32 +50,6 @@ dhan_html = f"""
 </div>"""
 components.html(dhan_html, height=390, scrolling=False)
 
-# 📊 TradingView मोफत लाइव्ह ५-मिनिट निफ्टी चार्ट विजेट [Added Safely]
-st.markdown("### 📈 LIVE NIFTY 50 CHART")
-tv_chart_html = """
-<div class="tradingview-widget-container" style="height:320px; width:100%;">
-  <div id="tradingview_nifty"></div>
-  <script type="text/javascript" src="https://tradingview.com"></script>
-  <script type="text/javascript">
-  new TradingView.widget({
-    "autosize": true,
-    "symbol": "NSE:NIFTY",
-    "interval": "5",
-    "timezone": "Asia/Kolkata",
-    "theme": "dark",
-    "style": "1",
-    "locale": "en",
-    "toolbar_bg": "#f1f3f6",
-    "enable_publishing": false,
-    "hide_legend": true,
-    "save_image": false,
-    "container_id": "tradingview_nifty"
-  });
-  </script>
-</div>
-"""
-components.html(tv_chart_html, height=320, scrolling=False)
-
 st.markdown("### 🧮 VIRTUAL WALLET LEDGER")
 c1, c2, c3 = st.columns(3)
 with c1: st.metric("💰 Wallet Bal", f"₹{ledger['wallet_balance']:.1f}")
@@ -84,7 +58,12 @@ with c3: st.metric("🏁 Total Trade", f"{ledger['total_trades']}")
 
 st.markdown("### 📋 RECENT TRADES HISTORY")
 if ledger['trades']:
-    st.dataframe(pd.DataFrame(ledger['trades']).tail(5)[['time', 'type', 'option_symbol', 'entry', 'target', 'sl', 'status']], use_container_width=True, hide_index=True)
+    df_history = pd.DataFrame(ledger['trades']).tail(5)
+    # इथून ट्रेड एक्झिक्युशन वेळ (O-Time कॉलम) डॅशबोर्डवर थेट दिसेल
+    st.dataframe(df_history[['time', 'type', 'option_symbol', 'qty', 'entry', 'target', 'sl', 'status']], 
+                 use_container_width=True, 
+                 hide_index=True,
+                 column_config={"time": "O-Time", "type": "Type", "option_symbol": "Symbol", "qty": "Qty"})
 else:
     st.caption("⏳ No trades recorded yet. Waiting for market setup...")
 time.sleep(2); st.rerun()
