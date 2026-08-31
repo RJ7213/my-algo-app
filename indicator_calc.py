@@ -14,11 +14,10 @@ def calculate_tv_rsi(series, period=14):
     avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
     avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, 0.00001)
-    # चार्टशी सिंक ठेवण्यासाठी शेवटची लाईव्ह कँडल (-1) चा वापर
     return float((100 - (100 / (1 + rs))).iloc[-1])
 
 def start_indicator_engine():
-    logging.info("प्रगत रिजेक्शन इंजिनसह इंडिकेटर मेंदू सुरू झाला आहे...")
+    logging.info("अचूक ऑप्शन्स व्हॉल्यूम कॅल्क्युलेटर मेंदू सुरू झाला...")
     while True:
         now_dt = datetime.utcnow() + timedelta(hours=5, minutes=30)
         if not os.path.exists('data_raw.json'):
@@ -26,31 +25,28 @@ def start_indicator_engine():
         try:
             with open('data_raw.json', 'r') as f: raw = json.load(f)
             spot = float(raw['live_spot'])
-            if not raw.get('candles') or len(raw['candles']) < 3:
+            if not raw.get('candles') or not raw.get('opt_candles'):
                 time.sleep(1); continue
                 
             df = pd.DataFrame(raw['candles'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
-            for col in ['open', 'high', 'low', 'close', 'volume']:
-                df[col] = df[col].astype(float)
-            df['datetime'] = pd.to_datetime(df['date'])
+            # वर्करकडून आलेला खऱ्या ऑप्शन्सचा डेटा लोड करणे
+            df_opt = pd.DataFrame(raw['opt_candles'], columns=['date', 'open', 'high', 'low', 'close', 'volume'])
             
-            # १. आरएसआय आणि ईएमए लाईव्ह सिंक
+            for d in [df, df_opt]:
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    d[col] = d[col].astype(float)
+                d['datetime'] = pd.to_datetime(d['date'])
+            
+            # इंडेक्स स्पॉट गणीत
             rsi_v = calculate_tv_rsi(df['close'], 14)
             ema9 = float(df['close'].ewm(span=9, adjust=False).mean().iloc[-1])
             
             today_str = now_dt.strftime("%Y-%m-%d")
             df_t = df[df['datetime'].dt.strftime('%Y-%m-%d') == today_str].copy()
-            
-            if not df_t.empty:
-                high = float(df_t['high'].max())
-                low = float(df_t['low'].min())
-            else:
-                high = 24188.30
-                low = 24076.85
+            high = float(df_t['high'].max()) if not df_t.empty else 24188.30
+            low = float(df_t['low'].min()) if not df_t.empty else 24076.85
             
             psy_level = int(round(spot / 50.0) * 50)
-            
-            # ⭐ अचूक कँडल पॅटर्नसाठी नुकतीच बंद झालेली कँडल index [-2] वापरणे (No Fake Noise)
             c_open, c_close = df['open'].iloc[-2], df['close'].iloc[-2]
             c_high, c_low = df['high'].iloc[-2], df['low'].iloc[-2]
             
@@ -58,14 +54,9 @@ def start_indicator_engine():
             top_wick = c_high - max(c_open, c_close)
             bot_wick = min(c_open, c_close) - c_low
             
-            # ⭐ रिजेक्शन पकडण्याची रेंज ८ वरून २५ पॉईंट्स केली जेणेकरून २४००० चे रिजेक्शन सुटणार नाही
-            is_rejection = (abs(c_high - psy_level) <= 25 and top_wick >= (c_size * 0.4)) or \
-                           (abs(c_low - psy_level) <= 25 and bot_wick >= (c_size * 0.4))
-            
-            # जर रिजेक्शन नसेल आणि भाव ९-EMA च्या जवळ रेंगाळत असेल तरच पुलबॅक लावणे
+            is_rejection = (abs(c_high - psy_level) <= 25 and top_wick >= (c_size * 0.4)) or (abs(c_low - psy_level) <= 25 and bot_wick >= (c_size * 0.4))
             is_pullback = not is_rejection and (abs(spot - ema9) <= 30.0)
             
-            # २. स्ट्रॅटेजी क्लासिफायर नियम
             if is_rejection:
                 otype = "PE" if top_wick > bot_wick else "CE"
                 rsi_st, setup_name = "PASS", "Major Rejection"
@@ -74,7 +65,6 @@ def start_indicator_engine():
                 rsi_st = "PASS" if (rsi_v >= 45.0 if otype=="CE" else rsi_v <= 55.0) else "FAIL"
                 setup_name = "Pullback"
             else:
-                # जर रिजेक्शन नसेल आणि भाव ९-EMA तोडून लांब निघून गेला असेल तर सरळ BREAKOUT मोड ऑन करणे!
                 otype = "CE" if spot > ema9 else "PE"
                 rsi_st = "PASS" if (rsi_v >= 60.0 if otype=="CE" else rsi_v <= 40.0) else "FAIL"
                 setup_name = "Breakout"
@@ -82,15 +72,22 @@ def start_indicator_engine():
             ttype = f"{otype}_BUY" if otype != "NONE" else "NONE"
             ema_dist = abs(spot - ema9)
             
-            if is_rejection or setup_name == "Breakout": 
-                ema_st = "PASS" # ब्रेकआऊट आणि रिजेक्शनला ईएमए डिस्टन्स लॉक नको
+            if is_rejection or setup_name == "Breakout": ema_st = "PASS"
             else:
                 if otype == "CE": ema_st = "PASS" if (spot >= (ema9 - 5) and ema_dist <= 25) else "FAIL"
                 elif otype == "PE": ema_st = "PASS" if (spot <= (ema9 + 5) and ema_dist <= 25) else "FAIL"
                 else: ema_st = "FAIL"
             
-            vol_ratio = 1.2
-            vol_st = "PASS"
+            # ⭐⭐⭐ [खरा आणि मूळ ऑप्शन्स प्रीमियम व्हॉल्यूम नियम] ⭐⭐⭐
+            # इथे आपण इंडेक्स स्पॉट ऐवजी थेट वर्करने आणलेल्या ऑप्शन्सचा व्हॉल्यूम मोजत आहोत!
+            df_opt['vsma'] = df_opt['volume'].rolling(window=20, min_periods=1).mean()
+            last_vol = float(df_opt['volume'].iloc[-2]) # बंद झालेली ऑप्शन कँडल
+            last_vsma = float(df_opt['vsma'].iloc[-2]) if float(df_opt['vsma'].iloc[-2]) > 0 else 1.0
+            
+            vol_ratio = round(last_vol / last_vsma, 1)
+            # मूळ नियम: ऑप्शन प्रीमियमचा व्हॉल्यूम २० सरासरीपेक्षा जास्त असेल तरच PASS!
+            vol_st = "PASS" if last_vol >= last_vsma else "FAIL"
+            # ⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐
             
             next_w = high if otype == "CE" else low
             if is_rejection: next_w = low if otype == "PE" else high
