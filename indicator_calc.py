@@ -2,6 +2,12 @@
 #
 # Indicator engine NEVER talks to Angel One.
 # Reads data_raw.json and publishes strategy_signal.json.
+#
+# IMPORTANT:
+# - Indicators calculate continuously from available candles.
+# - Signal structure uses ONLY the last COMPLETED 5-minute candle (-2).
+# - It does NOT wait for the current 5-minute candle to close.
+# - It only requires enough historical candles to calculate indicators.
 
 import json
 import logging
@@ -9,7 +15,6 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
-import numpy as np
 import pandas as pd
 
 
@@ -41,19 +46,10 @@ def calculate_tv_rsi(series, period=14):
 
     delta = series.diff()
 
-    gain = delta.where(
-        delta > 0,
-        0.0
-    ).astype(float)
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
 
-    loss = (
-        -delta.where(
-            delta < 0,
-            0.0
-        )
-    ).astype(float)
-
-    alpha = 1 / period
+    alpha = 1.0 / period
 
     avg_gain = gain.ewm(
         alpha=alpha,
@@ -65,18 +61,11 @@ def calculate_tv_rsi(series, period=14):
         adjust=False
     ).mean()
 
-    rs = avg_gain / avg_loss.replace(
-        0,
-        0.00001
-    )
+    avg_loss = avg_loss.replace(0, 0.00001)
 
-    rsi = (
-        100
-        - (
-            100
-            / (1 + rs)
-        )
-    )
+    rs = avg_gain / avg_loss
+
+    rsi = 100.0 - (100.0 / (1.0 + rs))
 
     return float(rsi.iloc[-1])
 
@@ -85,11 +74,7 @@ def load_raw():
 
     try:
 
-        with open(
-            "data_raw.json",
-            "r"
-        ) as f:
-
+        with open("data_raw.json", "r") as f:
             return json.load(f)
 
     except Exception:
@@ -99,44 +84,58 @@ def load_raw():
 
 def start_indicator_engine():
 
-    logging.info(
-        "🟢 Indicator engine started"
-    )
+    logging.info("🟢 Indicator engine started")
+
+    last_logged_candle_count = -1
+    last_signal_candle = ""
 
     while True:
 
         raw = load_raw()
 
         if not raw:
-
             time.sleep(1)
             continue
 
         try:
 
             if "live_spot" not in raw:
-
                 time.sleep(1)
                 continue
 
-            spot = float(
-                raw["live_spot"]
-            )
+            spot = float(raw["live_spot"])
 
-            candles = raw.get(
-                "candles",
-                []
-            )
+            candles = raw.get("candles") or []
+
+            # -------------------------------------------------
+            # MINIMUM DATA
+            #
+            # We need:
+            # 14 RSI period
+            # EMA 20
+            # volume average
+            # previous completed candle
+            #
+            # 22 candles is sufficient.
+            # -------------------------------------------------
 
             if len(candles) < 22:
 
-                logging.info(
-                    "Waiting for sufficient 5-min candles: %d/22",
-                    len(candles)
-                )
+                if len(candles) != last_logged_candle_count:
+
+                    logging.info(
+                        "Waiting for historical candles: %d/22",
+                        len(candles)
+                    )
+
+                    last_logged_candle_count = len(candles)
 
                 time.sleep(1)
                 continue
+
+            # -------------------------------------------------
+            # DATAFRAME
+            # -------------------------------------------------
 
             df = pd.DataFrame(
                 candles,
@@ -146,8 +145,8 @@ def start_indicator_engine():
                     "high",
                     "low",
                     "close",
-                    "volume",
-                ],
+                    "volume"
+                ]
             )
 
             for col in [
@@ -155,7 +154,7 @@ def start_indicator_engine():
                 "high",
                 "low",
                 "close",
-                "volume",
+                "volume"
             ]:
 
                 df[col] = pd.to_numeric(
@@ -163,32 +162,20 @@ def start_indicator_engine():
                     errors="coerce"
                 )
 
-            df = df.dropna(
-                subset=[
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                ]
-            ).reset_index(
-                drop=True
-            )
-
-            if len(df) < 22:
-
-                time.sleep(1)
-                continue
-
             df["datetime"] = pd.to_datetime(
                 df["date"],
                 errors="coerce"
             )
 
             df = df.dropna(
-                subset=["datetime"]
-            ).reset_index(
-                drop=True
-            )
+                subset=[
+                    "datetime",
+                    "open",
+                    "high",
+                    "low",
+                    "close"
+                ]
+            ).reset_index(drop=True)
 
             if len(df) < 22:
 
@@ -196,7 +183,25 @@ def start_indicator_engine():
                 continue
 
             # -------------------------------------------------
+            # IMPORTANT:
+            #
+            # -1 = currently forming candle
+            # -2 = LAST COMPLETED 5-MIN CANDLE
+            #
+            # Signal candle is ALWAYS -2.
+            # -------------------------------------------------
+
+            closed_idx = -2
+
+            signal_candle_time = str(
+                df["date"].iloc[closed_idx]
+            )
+
+            # -------------------------------------------------
             # INDICATORS
+            #
+            # Indicators use available historical data.
+            # No waiting for next candle close.
             # -------------------------------------------------
 
             rsi_v = calculate_tv_rsi(
@@ -228,7 +233,9 @@ def start_indicator_engine():
             # TODAY HIGH / LOW
             # -------------------------------------------------
 
-            today_str = now_ist().strftime(
+            now_dt = now_ist()
+
+            today_str = now_dt.strftime(
                 "%Y-%m-%d"
             )
 
@@ -236,7 +243,7 @@ def start_indicator_engine():
                 df["datetime"]
                 .dt.strftime("%Y-%m-%d")
                 == today_str
-            ].copy()
+            ]
 
             if not df_t.empty:
 
@@ -254,13 +261,8 @@ def start_indicator_engine():
                 intraday_low = spot - 50.0
 
             # -------------------------------------------------
-            # CLOSED CANDLE ONLY
-            #
-            # -1 may still be forming.
-            # -2 is last completed candle.
+            # COMPLETED CANDLE DATA
             # -------------------------------------------------
-
-            closed_idx = -2
 
             c_open = float(
                 df["open"].iloc[closed_idx]
@@ -276,10 +278,6 @@ def start_indicator_engine():
 
             c_low = float(
                 df["low"].iloc[closed_idx]
-            )
-
-            current_candle_time = str(
-                df["date"].iloc[closed_idx]
             )
 
             candle_range = abs(
@@ -298,8 +296,7 @@ def start_indicator_engine():
 
             top_wick = max(
                 0.0,
-                c_high
-                - max(
+                c_high - max(
                     c_open,
                     c_close
                 )
@@ -310,8 +307,7 @@ def start_indicator_engine():
                 min(
                     c_open,
                     c_close
-                )
-                - c_low
+                ) - c_low
             )
 
             # -------------------------------------------------
@@ -319,8 +315,7 @@ def start_indicator_engine():
             # -------------------------------------------------
 
             psy_level = int(
-                round(spot / 50.0)
-                * 50
+                round(spot / 50.0) * 50
             )
 
             # -------------------------------------------------
@@ -328,9 +323,7 @@ def start_indicator_engine():
             # -------------------------------------------------
 
             is_candle_size_valid = (
-                12.0
-                <= candle_range
-                <= 25.0
+                12.0 <= candle_range <= 25.0
             )
 
             # -------------------------------------------------
@@ -338,12 +331,12 @@ def start_indicator_engine():
             # -------------------------------------------------
 
             upper_rejection = (
-                abs(c_high - psy_level) <= 25
+                abs(c_high - psy_level) <= 25.0
                 and top_wick >= candle_range * 0.50
             )
 
             lower_rejection = (
-                abs(c_low - psy_level) <= 25
+                abs(c_low - psy_level) <= 25.0
                 and bottom_wick >= candle_range * 0.50
             )
 
@@ -354,6 +347,9 @@ def start_indicator_engine():
 
             # -------------------------------------------------
             # PULLBACK
+            #
+            # Current LIVE spot can be compared with EMA9.
+            # No candle-close wait here.
             # -------------------------------------------------
 
             is_pullback = (
@@ -362,7 +358,7 @@ def start_indicator_engine():
             )
 
             # -------------------------------------------------
-            # DEFAULT VALUES
+            # DEFAULT
             # -------------------------------------------------
 
             otype = "NONE"
@@ -381,24 +377,16 @@ def start_indicator_engine():
             if is_rejection:
 
                 if upper_rejection:
-
                     otype = "PE"
 
                 elif lower_rejection:
-
                     otype = "CE"
-
-                else:
-
-                    otype = "NONE"
 
                 rsi_status = "PASS"
                 ema_status = "PASS"
 
                 setup_name = "Major Rejection"
 
-                # Rejection setup is already confirmed
-                # by its rejection structure.
                 candle_confirmed = True
 
             # -------------------------------------------------
@@ -429,16 +417,12 @@ def start_indicator_engine():
 
                 # Fixed 5% opposite-wick rule.
                 if otype == "CE":
-
                     opposite_wick = top_wick
-
                 else:
-
                     opposite_wick = bottom_wick
 
                 candle_confirmed = (
-                    opposite_wick
-                    <= candle_body * 0.05
+                    opposite_wick <= candle_body * 0.05
                 )
 
             # -------------------------------------------------
@@ -467,22 +451,17 @@ def start_indicator_engine():
                         else "FAIL"
                     )
 
-                # Existing breakout EMA rule.
                 ema_status = "PASS"
 
                 setup_name = "Breakout"
 
                 if otype == "CE":
-
                     opposite_wick = top_wick
-
                 else:
-
                     opposite_wick = bottom_wick
 
                 candle_confirmed = (
-                    opposite_wick
-                    <= candle_body * 0.05
+                    opposite_wick <= candle_body * 0.05
                 )
 
             # -------------------------------------------------
@@ -498,29 +477,30 @@ def start_indicator_engine():
             # -------------------------------------------------
             # VOLUME
             #
-            # Average uses previous 20 completed candles,
-            # excluding current signal candle.
+            # Previous 20 completed candles.
+            # Signal candle itself is included as current_volume.
             # -------------------------------------------------
 
             volume_window = df[
                 "volume"
-            ].iloc[
-                -22:-2
-            ]
+            ].iloc[-22:-2]
+
+            volume_window = volume_window.dropna()
 
             vol_avg = float(
                 volume_window.mean()
-            )
+            ) if not volume_window.empty else 0.0
 
             current_volume = float(
-                df["volume"].iloc[-2]
-            )
+                df["volume"].iloc[closed_idx]
+            ) if pd.notna(
+                df["volume"].iloc[closed_idx]
+            ) else 0.0
 
             if vol_avg > 0:
 
                 vol_ratio = round(
-                    current_volume
-                    / vol_avg,
+                    current_volume / vol_avg,
                     2
                 )
 
@@ -541,15 +521,13 @@ def start_indicator_engine():
             if otype == "CE":
 
                 runway_distance = (
-                    intraday_high
-                    - spot
+                    intraday_high - spot
                 )
 
             elif otype == "PE":
 
                 runway_distance = (
-                    spot
-                    - intraday_low
+                    spot - intraday_low
                 )
 
             else:
@@ -589,14 +567,6 @@ def start_indicator_engine():
             # REASON
             # -------------------------------------------------
 
-            reason = (
-                f"⏸ {setup_name} | "
-                f"RSI {rsi_v:.1f} | "
-                f"EMA9 {ema9:.2f} | "
-                f"Volume {vol_ratio:.2f}x | "
-                f"Runway {runway_distance:.1f}"
-            )
-
             if not signal_gate:
 
                 failed = []
@@ -615,22 +585,25 @@ def start_indicator_engine():
 
                 reason = (
                     f"🔒 {setup_name} LOCK | "
-                    f"Failed: {', '.join(failed) if failed else 'SETUP'}"
+                    f"Failed: "
+                    f"{', '.join(failed) if failed else 'SETUP'}"
                 )
 
             elif not is_candle_size_valid:
 
                 reason = (
                     f"⚠️ Size Lock | "
-                    f"Candle range {candle_range:.1f} "
-                    f"pts (required 12-25)"
+                    f"Candle range "
+                    f"{candle_range:.1f} pts "
+                    f"(required 12-25)"
                 )
 
             elif not candle_confirmed:
 
                 reason = (
                     "⚠️ Marubozu Lock | "
-                    "Opposite wick exceeds 5% of candle body"
+                    "Opposite wick exceeds 5% "
+                    "of candle body"
                 )
 
             else:
@@ -639,7 +612,8 @@ def start_indicator_engine():
                     f"🟢 SIGNAL READY | "
                     f"{setup_name} | "
                     f"{trade_type} | "
-                    f"Runway {runway_distance:.1f} pts"
+                    f"Runway "
+                    f"{runway_distance:.1f} pts"
                 )
 
             # -------------------------------------------------
@@ -647,8 +621,7 @@ def start_indicator_engine():
             # -------------------------------------------------
 
             option_strike = int(
-                round(spot / 50.0)
-                * 50
+                round(spot / 50.0) * 50
             )
 
             # -------------------------------------------------
@@ -667,7 +640,12 @@ def start_indicator_engine():
 
                 next_wall = spot
 
+            # -------------------------------------------------
+            # OUTPUT
+            # -------------------------------------------------
+
             payload = {
+
                 "live_spot": spot,
 
                 "rsi_v": round(
@@ -685,18 +663,23 @@ def start_indicator_engine():
                     2
                 ),
 
-                "rsi_status": rsi_status,
-                "ema_status": ema_status,
+                "rsi_status":
+                    rsi_status,
 
-                "vol_status": vol_status,
-                "vol_val": (
-                    f"{vol_ratio}x"
-                ),
+                "ema_status":
+                    ema_status,
 
-                "runway_status": runway_status,
-                "runway_val": (
-                    f"{runway_distance:.1f} pts"
-                ),
+                "vol_status":
+                    vol_status,
+
+                "vol_val":
+                    f"{vol_ratio}x",
+
+                "runway_status":
+                    runway_status,
+
+                "runway_val":
+                    f"{runway_distance:.1f} pts",
 
                 "intraday_high":
                     intraday_high,
@@ -753,25 +736,52 @@ def start_indicator_engine():
                     bottom_wick,
 
                 "candle_size_valid":
-                    is_candle_size_valid,
+                    bool(
+                        is_candle_size_valid
+                    ),
 
                 "candle_confirmed":
-                    candle_confirmed,
+                    bool(
+                        candle_confirmed
+                    ),
 
                 "strategy_used":
                     setup_name,
 
                 "candle_time":
-                    current_candle_time,
+                    signal_candle_time,
 
                 "calculated_at":
-                    now_ist().isoformat(),
+                    now_dt.isoformat(),
             }
 
             atomic_write_json(
                 "strategy_signal.json",
                 payload
             )
+
+            # -------------------------------------------------
+            # LOG ONLY WHEN COMPLETED CANDLE CHANGES
+            # -------------------------------------------------
+
+            if signal_candle_time != last_signal_candle:
+
+                logging.info(
+                    "🕐 Completed candle: %s | "
+                    "Spot %.2f | RSI %.2f | "
+                    "EMA9 %.2f | Setup %s | "
+                    "Signal %s",
+                    signal_candle_time,
+                    spot,
+                    rsi_v,
+                    ema9,
+                    setup_name,
+                    "READY" if final_trigger else "LOCKED"
+                )
+
+                last_signal_candle = (
+                    signal_candle_time
+                )
 
         except Exception as err:
 
@@ -780,9 +790,14 @@ def start_indicator_engine():
                 err
             )
 
+        # -------------------------------------------------
+        # IMPORTANT:
+        # Indicator recalculates every second.
+        # It does NOT wait for a 5-minute close.
+        # -------------------------------------------------
+
         time.sleep(1)
 
 
 if __name__ == "__main__":
     start_indicator_engine()
- 
