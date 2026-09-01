@@ -61,6 +61,7 @@ NIFTY_SPOT_TOKEN = os.getenv(
 IST = timezone(timedelta(hours=5, minutes=30))
 
 CONTRACT_CACHE_FILE = "option_contract_cache.json"
+CANDLE_CACHE_FILE = "candle_cache.json"
 
 
 # ============================================================
@@ -97,6 +98,45 @@ def load_json(path, default=None):
             return json.load(f)
     except Exception:
         return default
+
+
+def valid_candles(value):
+    """Return a clean candle list or None."""
+    if not isinstance(value, list) or not value:
+        return None
+
+    cleaned = []
+    for row in value:
+        if isinstance(row, (list, tuple)) and len(row) >= 6:
+            cleaned.append(list(row[:6]))
+    return cleaned or None
+
+
+def load_persisted_candles():
+    """Recover candles after worker restart/deploy when the file exists."""
+    cached = load_json(CANDLE_CACHE_FILE, None)
+    if isinstance(cached, dict):
+        candles = valid_candles(cached.get("candles"))
+        if candles:
+            return candles, cached.get("saved_at")
+
+    raw = load_json("data_raw.json", None)
+    if isinstance(raw, dict):
+        candles = valid_candles(raw.get("candles"))
+        if candles:
+            return candles, raw.get("candle_last_success")
+
+    return None, None
+
+
+def save_persisted_candles(candles, saved_at):
+    try:
+        atomic_write_json(
+            CANDLE_CACHE_FILE,
+            {"saved_at": saved_at, "candles": candles}
+        )
+    except Exception as exc:
+        logging.debug("Candle cache save error: %s", exc)
 
 
 # ============================================================
@@ -619,14 +659,28 @@ def start_backend_factory():
             # LOCAL STATE
             # ====================================================
 
-            cached_candles = None
+            # Recover the last good candle set before making any REST call.
+            # This prevents a temporary API/rate-limit error from resetting
+            # the indicator engine back to 0/22.
+            cached_candles, persisted_candle_time = load_persisted_candles()
+
+            if cached_candles:
+                logging.info(
+                    "🟢 Recovered cached 5-min candles: %d candles",
+                    len(cached_candles)
+                )
 
             # Last successful candle update
-            last_candle_fetch = (
-                datetime.min.replace(
-                    tzinfo=IST
-                )
-            )
+            last_candle_fetch = datetime.min.replace(tzinfo=IST)
+            if persisted_candle_time:
+                try:
+                    last_candle_fetch = datetime.fromisoformat(
+                        persisted_candle_time
+                    )
+                    if last_candle_fetch.tzinfo is None:
+                        last_candle_fetch = last_candle_fetch.replace(tzinfo=IST)
+                except Exception:
+                    last_candle_fetch = datetime.min.replace(tzinfo=IST)
 
             # Last candle API attempt
             last_candle_attempt = (
@@ -1065,23 +1119,31 @@ def start_backend_factory():
                                 and res.get("data")
                             ):
 
-                                cached_candles = (
-                                    res["data"]
-                                )
+                                fresh_candles = valid_candles(res.get("data"))
 
-                                last_candle_fetch = (
-                                    now_dt
-                                )
-
-                                # Reset backoff after success.
-                                candle_retry_delay = 60.0
-
-                                logging.info(
-                                    "🟢 5-min candles updated: %d candles",
-                                    len(
-                                        cached_candles
+                                if fresh_candles:
+                                    cached_candles = fresh_candles
+                                    last_candle_fetch = now_dt
+                                    save_persisted_candles(
+                                        cached_candles,
+                                        now_dt.isoformat()
                                     )
-                                )
+
+                                    # Reset backoff after success.
+                                    candle_retry_delay = 60.0
+
+                                    logging.info(
+                                        "🟢 5-min candles updated: %d candles",
+                                        len(cached_candles)
+                                    )
+                                else:
+                                    logging.warning(
+                                        "⚠️ Candle API returned malformed/empty candle data"
+                                    )
+                                    candle_retry_delay = min(
+                                        candle_retry_delay * 2,
+                                        MAX_CANDLE_RETRY
+                                    )
 
                             else:
 
@@ -1394,6 +1456,8 @@ def start_backend_factory():
 
                         "candle_retry_delay":
                             candle_retry_delay,
+                        "candle_count":
+                            len(cached_candles or []),
                     }
 
                     atomic_write_json(
