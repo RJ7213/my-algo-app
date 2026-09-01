@@ -1,13 +1,52 @@
 # indicator_calc.py
+# ============================================================
+# NIFTY INDICATOR + STRATEGY ENGINE
+# ============================================================
 #
-# Indicator engine NEVER talks to Angel One.
-# Reads data_raw.json and publishes strategy_signal.json.
+# ARCHITECTURE
+#
+#   data_worker.py
+#          |
+#          v
+#    data_raw.json
+#          |
+#          v
+#  indicator_calc.py
+#          |
+#          +--> strategy_signal.json
+#          |
+#          v
+#     paper_engine.py
+#          |
+#          v
+#   trade_history.json
+#          |
+#          v
+#      dashboard
 #
 # IMPORTANT:
-# - Indicators calculate continuously from available candles.
-# - Signal structure uses ONLY the last COMPLETED 5-minute candle (-2).
-# - It does NOT wait for the current 5-minute candle to close.
-# - It only requires enough historical candles to calculate indicators.
+#   - This file contains indicator + strategy calculation.
+#   - Dashboard DOES NOT calculate RSI/EMA/volume/runway.
+#   - data_worker DOES NOT calculate strategy.
+#   - Paper engine handles trade execution simulation.
+#   - Entry trigger is generated ONLY from the LAST COMPLETED
+#     5-minute candle.
+#   - Live candle is used for LIVE DISPLAY INDICATORS only.
+#   - The current forming candle can NEVER create a new entry.
+#
+# Existing strategy rules preserved:
+#   Major Rejection
+#   Pullback
+#   Breakout
+#   RSI
+#   EMA9
+#   EMA20
+#   Volume >= 1.20x
+#   Runway >= 15 points
+#   Candle range 12-25 points
+#   Opposite wick <= 5% of body
+#
+# ============================================================
 
 import json
 import logging
@@ -15,16 +54,52 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import pandas as pd
 
 
+# ============================================================
+# LOGGING
+# ============================================================
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
+DATA_RAW_FILE = "data_raw.json"
+SIGNAL_FILE = "strategy_signal.json"
+
+
+# ============================================================
+# STRATEGY CONSTANTS
+# ============================================================
+
+RSI_PERIOD = 14
+EMA_FAST = 9
+EMA_SLOW = 20
+
+VOLUME_LOOKBACK = 20
+MIN_VOLUME_RATIO = 1.20
+
+MIN_RUNWAY = 15.0
+
+MIN_CANDLE_RANGE = 12.0
+MAX_CANDLE_RANGE = 25.0
+
+MAX_OPPOSITE_WICK_RATIO = 0.05
+
+PSYCHOLOGICAL_STEP = 50.0
+PSY_REJECTION_DISTANCE = 25.0
+
+TARGET_BUFFER = 5.0
+
+
+# ============================================================
+# JSON
+# ============================================================
 
 def now_ist():
     return datetime.now(IST)
@@ -34,770 +109,1186 @@ def atomic_write_json(path, payload):
     tmp = f"{path}.tmp"
 
     with open(tmp, "w") as f:
-        json.dump(payload, f, separators=(",", ":"))
+        json.dump(
+            payload,
+            f,
+            separators=(",", ":"),
+            default=str,
+        )
 
     os.replace(tmp, path)
 
 
+def load_json(path, default=None):
+    if not os.path.exists(path):
+        return default
+
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+# ============================================================
+# RSI
+# ============================================================
+
 def calculate_tv_rsi(series, period=14):
+    """
+    TradingView-style Wilder/RMA RSI.
+    """
+
+    series = pd.to_numeric(
+        series,
+        errors="coerce",
+    )
 
     if len(series) < period + 1:
         return 50.0
 
     delta = series.diff()
 
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
+    gain = delta.where(
+        delta > 0,
+        0.0,
+    ).astype(float)
 
-    alpha = 1.0 / period
+    loss = (
+        -delta.where(
+            delta < 0,
+            0.0,
+        )
+    ).astype(float)
+
+    alpha = 1 / period
 
     avg_gain = gain.ewm(
         alpha=alpha,
-        adjust=False
+        adjust=False,
     ).mean()
 
     avg_loss = loss.ewm(
         alpha=alpha,
-        adjust=False
+        adjust=False,
     ).mean()
 
-    avg_loss = avg_loss.replace(0, 0.00001)
+    rs = avg_gain / avg_loss.replace(
+        0,
+        0.00001,
+    )
 
-    rs = avg_gain / avg_loss
+    rsi = (
+        100
+        - (
+            100
+            / (1 + rs)
+        )
+    )
 
-    rsi = 100.0 - (100.0 / (1.0 + rs))
+    value = rsi.iloc[-1]
 
-    return float(rsi.iloc[-1])
+    if pd.isna(value):
+        return 50.0
+
+    return float(value)
 
 
-def load_raw():
+# ============================================================
+# DATAFRAME
+# ============================================================
 
-    try:
+def build_dataframe(candles):
+    if not isinstance(candles, list):
+        return pd.DataFrame()
 
-        with open("data_raw.json", "r") as f:
-            return json.load(f)
+    rows = []
 
-    except Exception:
+    for row in candles:
 
-        return None
+        if not isinstance(row, (list, tuple)):
+            continue
 
+        if len(row) < 6:
+            continue
+
+        rows.append(
+            [
+                row[0],
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                row[5],
+            ]
+        )
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ],
+    )
+
+    for col in (
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    ):
+
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce",
+        )
+
+    df["datetime"] = pd.to_datetime(
+        df["date"],
+        errors="coerce",
+    )
+
+    df = df.dropna(
+        subset=[
+            "datetime",
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
+    )
+
+    df = df.sort_values(
+        "datetime"
+    )
+
+    # One row per timestamp.
+    df = (
+        df.drop_duplicates(
+            subset=["datetime"],
+            keep="last",
+        )
+        .reset_index(drop=True)
+    )
+
+    return df
+
+
+# ============================================================
+# INDICATORS
+# ============================================================
+
+def calculate_indicators(df):
+
+    df = df.copy()
+
+    df["EMA9"] = (
+        df["close"]
+        .ewm(
+            span=EMA_FAST,
+            adjust=False,
+        )
+        .mean()
+    )
+
+    df["EMA20"] = (
+        df["close"]
+        .ewm(
+            span=EMA_SLOW,
+            adjust=False,
+        )
+        .mean()
+    )
+
+    # Calculate RSI for every candle.
+    delta = df["close"].diff()
+
+    gain = delta.where(
+        delta > 0,
+        0.0,
+    ).astype(float)
+
+    loss = (
+        -delta.where(
+            delta < 0,
+            0.0,
+        )
+    ).astype(float)
+
+    alpha = 1 / RSI_PERIOD
+
+    avg_gain = gain.ewm(
+        alpha=alpha,
+        adjust=False,
+    ).mean()
+
+    avg_loss = loss.ewm(
+        alpha=alpha,
+        adjust=False,
+    ).mean()
+
+    rs = avg_gain / avg_loss.replace(
+        0,
+        0.00001,
+    )
+
+    df["RSI"] = (
+        100
+        - (
+            100
+            / (1 + rs)
+        )
+    )
+
+    return df
+
+
+# ============================================================
+# CURRENT / CLOSED CANDLE
+# ============================================================
+
+def get_candle_status(df):
+    """
+    Returns:
+        live index = -1
+        closed index = -2
+
+    The latest row is treated as forming because the worker
+    publishes the current 5-minute candle continuously.
+    """
+
+    if len(df) < 22:
+        return None, None
+
+    return -1, -2
+
+
+# ============================================================
+# CANDLE STRUCTURE
+# ============================================================
+
+def candle_metrics(row):
+
+    c_open = float(row["open"])
+    c_close = float(row["close"])
+    c_high = float(row["high"])
+    c_low = float(row["low"])
+
+    candle_range = abs(
+        c_high - c_low
+    )
+
+    candle_body = abs(
+        c_close - c_open
+    )
+
+    if candle_range <= 0:
+        candle_range = 0.01
+
+    if candle_body <= 0:
+        candle_body = 0.01
+
+    top_wick = max(
+        0.0,
+        c_high
+        - max(
+            c_open,
+            c_close,
+        ),
+    )
+
+    bottom_wick = max(
+        0.0,
+        min(
+            c_open,
+            c_close,
+        )
+        - c_low,
+    )
+
+    return {
+        "c_open": c_open,
+        "c_close": c_close,
+        "c_high": c_high,
+        "c_low": c_low,
+        "candle_range": candle_range,
+        "candle_body": candle_body,
+        "top_wick": top_wick,
+        "bottom_wick": bottom_wick,
+    }
+
+
+# ============================================================
+# LIVE INDICATOR SNAPSHOT
+# ============================================================
+
+def calculate_live_snapshot(
+    df,
+    spot,
+    day_high,
+    day_low,
+):
+    """
+    LIVE values for dashboard.
+
+    These values are NOT allowed to create an entry.
+    """
+
+    if df.empty:
+        return {}
+
+    last = df.iloc[-1]
+
+    rsi_live = (
+        float(last["RSI"])
+        if not pd.isna(last["RSI"])
+        else 50.0
+    )
+
+    ema9_live = float(
+        last["EMA9"]
+    )
+
+    ema20_live = float(
+        last["EMA20"]
+    )
+
+    return {
+        "live_rsi": round(
+            rsi_live,
+            2,
+        ),
+        "live_ema9": round(
+            ema9_live,
+            2,
+        ),
+        "live_ema20": round(
+            ema20_live,
+            2,
+        ),
+        "live_spot": round(
+            float(spot),
+            2,
+        ),
+        "live_intraday_high": round(
+            float(day_high),
+            2,
+        ),
+        "live_intraday_low": round(
+            float(day_low),
+            2,
+        ),
+        "live_candle_time": str(
+            last["datetime"]
+        ),
+        "live_candle_open": float(
+            last["open"]
+        ),
+        "live_candle_high": float(
+            last["high"]
+        ),
+        "live_candle_low": float(
+            last["low"]
+        ),
+        "live_candle_close": float(
+            last["close"]
+        ),
+    }
+
+
+# ============================================================
+# COMPLETED-CANDLE STRATEGY
+# ============================================================
+
+def calculate_closed_candle_signal(
+    df,
+    spot,
+    day_high,
+    day_low,
+):
+    """
+    ALL entry logic is based on the completed candle (-2).
+
+    This prevents intrabar signal repainting.
+    """
+
+    if len(df) < 22:
+
+        return {
+            "ready": False,
+            "reason": "Waiting for 22 candles",
+        }
+
+    closed_idx = -2
+
+    row = df.iloc[closed_idx]
+
+    metrics = candle_metrics(row)
+
+    c_open = metrics["c_open"]
+    c_close = metrics["c_close"]
+    c_high = metrics["c_high"]
+    c_low = metrics["c_low"]
+
+    candle_range = metrics["candle_range"]
+    candle_body = metrics["candle_body"]
+
+    top_wick = metrics["top_wick"]
+    bottom_wick = metrics["bottom_wick"]
+
+    rsi_v = float(
+        row["RSI"]
+        if not pd.isna(row["RSI"])
+        else 50.0
+    )
+
+    ema9 = float(
+        row["EMA9"]
+    )
+
+    ema20 = float(
+        row["EMA20"]
+    )
+
+    # --------------------------------------------------------
+    # Psychological level
+    # --------------------------------------------------------
+
+    psy_level = int(
+        round(
+            float(spot)
+            / PSYCHOLOGICAL_STEP
+        )
+        * PSYCHOLOGICAL_STEP
+    )
+
+    # --------------------------------------------------------
+    # Candle size
+    # --------------------------------------------------------
+
+    is_candle_size_valid = (
+        MIN_CANDLE_RANGE
+        <= candle_range
+        <= MAX_CANDLE_RANGE
+    )
+
+    # --------------------------------------------------------
+    # Rejection
+    # --------------------------------------------------------
+
+    upper_rejection = (
+        abs(c_high - psy_level)
+        <= PSY_REJECTION_DISTANCE
+        and top_wick
+        >= candle_range * 0.50
+    )
+
+    lower_rejection = (
+        abs(c_low - psy_level)
+        <= PSY_REJECTION_DISTANCE
+        and bottom_wick
+        >= candle_range * 0.50
+    )
+
+    is_rejection = (
+        upper_rejection
+        or lower_rejection
+    )
+
+    # --------------------------------------------------------
+    # Pullback
+    # --------------------------------------------------------
+
+    is_pullback = (
+        not is_rejection
+        and abs(
+            float(spot) - ema9
+        )
+        <= 25.0
+    )
+
+    # --------------------------------------------------------
+    # Defaults
+    # --------------------------------------------------------
+
+    otype = "NONE"
+
+    rsi_status = "FAIL"
+    ema_status = "FAIL"
+
+    setup_name = "NONE"
+
+    candle_confirmed = False
+
+    # --------------------------------------------------------
+    # MAJOR REJECTION
+    # --------------------------------------------------------
+
+    if is_rejection:
+
+        if upper_rejection:
+            otype = "PE"
+        elif lower_rejection:
+            otype = "CE"
+
+        rsi_status = "PASS"
+        ema_status = "PASS"
+
+        setup_name = "Major Rejection"
+
+        # Existing rejection structure itself confirms candle.
+        candle_confirmed = True
+
+    # --------------------------------------------------------
+    # PULLBACK
+    # --------------------------------------------------------
+
+    elif is_pullback:
+
+        otype = (
+            "CE"
+            if float(spot) >= ema9
+            else "PE"
+        )
+
+        rsi_status = (
+            "PASS"
+            if 45.0 <= rsi_v <= 55.0
+            else "FAIL"
+        )
+
+        ema_status = (
+            "PASS"
+            if abs(
+                float(spot) - ema9
+            ) <= 15.0
+            else "FAIL"
+        )
+
+        setup_name = "Pullback"
+
+        opposite_wick = (
+            top_wick
+            if otype == "CE"
+            else bottom_wick
+        )
+
+        candle_confirmed = (
+            opposite_wick
+            <= candle_body
+            * MAX_OPPOSITE_WICK_RATIO
+        )
+
+    # --------------------------------------------------------
+    # BREAKOUT
+    # --------------------------------------------------------
+
+    else:
+
+        if float(spot) > ema9:
+
+            otype = "CE"
+
+            rsi_status = (
+                "PASS"
+                if rsi_v >= 60.0
+                else "FAIL"
+            )
+
+        else:
+
+            otype = "PE"
+
+            rsi_status = (
+                "PASS"
+                if rsi_v <= 40.0
+                else "FAIL"
+            )
+
+        ema_status = "PASS"
+
+        setup_name = "Breakout"
+
+        opposite_wick = (
+            top_wick
+            if otype == "CE"
+            else bottom_wick
+        )
+
+        candle_confirmed = (
+            opposite_wick
+            <= candle_body
+            * MAX_OPPOSITE_WICK_RATIO
+        )
+
+    # --------------------------------------------------------
+    # Trade type
+    # --------------------------------------------------------
+
+    trade_type = (
+        f"{otype}_BUY"
+        if otype != "NONE"
+        else "NONE"
+    )
+
+    # --------------------------------------------------------
+    # Volume
+    #
+    # Strategy volume comes from NIFTY spot candle data if
+    # available. The worker also publishes FUTURE live volume.
+    #
+    # For the entry gate, use the completed candle's volume
+    # against the previous 20 completed candles.
+    # --------------------------------------------------------
+
+    volume_window = df[
+        "volume"
+    ].iloc[
+        -22:-2
+    ]
+
+    current_volume = float(
+        df["volume"].iloc[-2]
+        or 0.0
+    )
+
+    vol_avg = float(
+        volume_window.mean()
+        if not volume_window.empty
+        else 0.0
+    )
+
+    if vol_avg > 0:
+
+        vol_ratio = round(
+            current_volume
+            / vol_avg,
+            2,
+        )
+
+    else:
+
+        vol_ratio = 0.0
+
+    vol_status = (
+        "PASS"
+        if vol_ratio >= MIN_VOLUME_RATIO
+        else "FAIL"
+    )
+
+    # --------------------------------------------------------
+    # RUNWAY
+    # --------------------------------------------------------
+
+    if otype == "CE":
+
+        runway_distance = (
+            float(day_high)
+            - float(spot)
+        )
+
+    elif otype == "PE":
+
+        runway_distance = (
+            float(spot)
+            - float(day_low)
+        )
+
+    else:
+
+        runway_distance = 0.0
+
+    runway_distance = max(
+        0.0,
+        runway_distance,
+    )
+
+    runway_status = (
+        "PASS"
+        if runway_distance >= MIN_RUNWAY
+        else "FAIL"
+    )
+
+    # --------------------------------------------------------
+    # FINAL GATE
+    # --------------------------------------------------------
+
+    signal_gate = (
+        otype != "NONE"
+        and rsi_status == "PASS"
+        and ema_status == "PASS"
+        and vol_status == "PASS"
+        and runway_status == "PASS"
+    )
+
+    final_trigger = (
+        signal_gate
+        and is_candle_size_valid
+        and candle_confirmed
+    )
+
+    # --------------------------------------------------------
+    # Reason
+    # --------------------------------------------------------
+
+    if not signal_gate:
+
+        failed = []
+
+        if rsi_status != "PASS":
+            failed.append("RSI")
+
+        if ema_status != "PASS":
+            failed.append("EMA")
+
+        if vol_status != "PASS":
+            failed.append("VOLUME")
+
+        if runway_status != "PASS":
+            failed.append("RUNWAY")
+
+        reason = (
+            f"LOCK | {setup_name} | "
+            f"Failed: "
+            f"{', '.join(failed) if failed else 'SETUP'}"
+        )
+
+    elif not is_candle_size_valid:
+
+        reason = (
+            f"Size Lock | Candle range "
+            f"{candle_range:.1f} pts "
+            f"(required "
+            f"{MIN_CANDLE_RANGE:.0f}-"
+            f"{MAX_CANDLE_RANGE:.0f})"
+        )
+
+    elif not candle_confirmed:
+
+        reason = (
+            "Marubozu Lock | Opposite wick "
+            "exceeds 5% of candle body"
+        )
+
+    else:
+
+        reason = (
+            f"SIGNAL READY | "
+            f"{setup_name} | "
+            f"{trade_type} | "
+            f"Runway {runway_distance:.1f} pts"
+        )
+
+    # --------------------------------------------------------
+    # Option strike
+    # --------------------------------------------------------
+
+    option_strike = int(
+        round(
+            float(spot)
+            / PSYCHOLOGICAL_STEP
+        )
+        * PSYCHOLOGICAL_STEP
+    )
+
+    # --------------------------------------------------------
+    # Next wall
+    # --------------------------------------------------------
+
+    if otype == "CE":
+        next_wall = float(day_high)
+
+    elif otype == "PE":
+        next_wall = float(day_low)
+
+    else:
+        next_wall = float(spot)
+
+    return {
+        "ready": True,
+
+        "signal_triggered":
+            bool(final_trigger),
+
+        "trade_type":
+            trade_type,
+
+        "otype":
+            otype,
+
+        "option_strike":
+            option_strike,
+
+        "strategy_used":
+            setup_name,
+
+        "algo_reason":
+            reason,
+
+        "rsi_v":
+            round(rsi_v, 2),
+
+        "ema9":
+            round(ema9, 2),
+
+        "ema20":
+            round(ema20, 2),
+
+        "rsi_status":
+            rsi_status,
+
+        "ema_status":
+            ema_status,
+
+        "vol_status":
+            vol_status,
+
+        "vol_val":
+            f"{vol_ratio}x",
+
+        "volume_ratio":
+            vol_ratio,
+
+        "runway_status":
+            runway_status,
+
+        "runway_val":
+            f"{runway_distance:.1f} pts",
+
+        "run_df":
+            runway_distance,
+
+        "intraday_high":
+            float(day_high),
+
+        "intraday_low":
+            float(day_low),
+
+        "psy_level":
+            psy_level,
+
+        "next_w":
+            next_wall,
+
+        "c_open":
+            c_open,
+
+        "c_close":
+            c_close,
+
+        "c_low":
+            c_low,
+
+        "c_high":
+            c_high,
+
+        "candle_range":
+            candle_range,
+
+        "candle_body":
+            candle_body,
+
+        "top_wick":
+            top_wick,
+
+        "bottom_wick":
+            bottom_wick,
+
+        "candle_size_valid":
+            bool(is_candle_size_valid),
+
+        "candle_confirmed":
+            bool(candle_confirmed),
+
+        "candle_time":
+            str(row["datetime"]),
+
+    }
+
+
+# ============================================================
+# ENGINE
+# ============================================================
 
 def start_indicator_engine():
 
-    logging.info("🟢 Indicator engine started")
+    logging.info(
+        "Indicator / strategy backend started"
+    )
 
-    last_logged_candle_count = -1
-    last_signal_candle = ""
+    last_published_closed_candle = None
 
     while True:
 
-        raw = load_raw()
-
-        if not raw:
-            time.sleep(1)
-            continue
-
         try:
 
-            if "live_spot" not in raw:
-                time.sleep(1)
-                continue
-
-            spot = float(raw["live_spot"])
-
-            candles = raw.get("candles") or []
-
-            # -------------------------------------------------
-            # MINIMUM DATA
-            #
-            # We need:
-            # 14 RSI period
-            # EMA 20
-            # volume average
-            # previous completed candle
-            #
-            # 22 candles is sufficient.
-            # -------------------------------------------------
-
-            if len(candles) < 22:
-
-                if len(candles) != last_logged_candle_count:
-
-                    logging.info(
-                        "Waiting for historical candles: %d/22",
-                        len(candles)
-                    )
-
-                    last_logged_candle_count = len(candles)
-
-                time.sleep(1)
-                continue
-
-            # -------------------------------------------------
-            # DATAFRAME
-            # -------------------------------------------------
-
-            df = pd.DataFrame(
-                candles,
-                columns=[
-                    "date",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume"
-                ]
+            raw = load_json(
+                DATA_RAW_FILE,
+                None,
             )
 
-            for col in [
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume"
-            ]:
+            if not isinstance(raw, dict):
 
-                df[col] = pd.to_numeric(
-                    df[col],
-                    errors="coerce"
-                )
+                time.sleep(0.5)
+                continue
 
-            df["datetime"] = pd.to_datetime(
-                df["date"],
-                errors="coerce"
+            spot = raw.get(
+                "live_spot"
             )
 
-            df = df.dropna(
-                subset=[
-                    "datetime",
-                    "open",
-                    "high",
-                    "low",
-                    "close"
-                ]
-            ).reset_index(drop=True)
+            if spot is None:
+
+                time.sleep(0.5)
+                continue
+
+            spot = float(spot)
+
+            candles = raw.get(
+                "candles",
+                [],
+            )
+
+            df = build_dataframe(
+                candles
+            )
 
             if len(df) < 22:
 
+                payload = {
+                    "live_spot": spot,
+                    "signal_triggered": False,
+                    "trade_type": "NONE",
+                    "otype": "NONE",
+                    "strategy_used": "NONE",
+                    "algo_reason":
+                        f"Waiting for sufficient candles: "
+                        f"{len(df)}/22",
+                    "engine_status": "WAITING",
+                    "candle_count": len(df),
+                    "calculated_at":
+                        now_ist().isoformat(),
+                }
+
+                atomic_write_json(
+                    SIGNAL_FILE,
+                    payload,
+                )
+
                 time.sleep(1)
                 continue
 
-            # -------------------------------------------------
+            # ----------------------------------------------------
+            # INDICATORS
+            # ----------------------------------------------------
+
+            df = calculate_indicators(
+                df
+            )
+
+            # ----------------------------------------------------
+            # LIVE DAY RANGE
+            # ----------------------------------------------------
+
+            day_high = float(
+                raw.get(
+                    "intraday_high",
+                    spot,
+                )
+            )
+
+            day_low = float(
+                raw.get(
+                    "intraday_low",
+                    spot,
+                )
+            )
+
+            # ----------------------------------------------------
+            # LIVE INDICATOR SNAPSHOT
+            # ----------------------------------------------------
+
+            live_snapshot = (
+                calculate_live_snapshot(
+                    df,
+                    spot,
+                    day_high,
+                    day_low,
+                )
+            )
+
+            # ----------------------------------------------------
+            # CLOSED CANDLE
+            # ----------------------------------------------------
+
+            live_idx, closed_idx = (
+                get_candle_status(df)
+            )
+
+            closed_candle_time = str(
+                df["datetime"].iloc[
+                    closed_idx
+                ]
+            )
+
+            signal = (
+                calculate_closed_candle_signal(
+                    df,
+                    spot,
+                    day_high,
+                    day_low,
+                )
+            )
+
+            # ----------------------------------------------------
             # IMPORTANT:
             #
-            # -1 = currently forming candle
-            # -2 = LAST COMPLETED 5-MIN CANDLE
+            # Only the newest completed candle can create a new
+            # trigger.
             #
-            # Signal candle is ALWAYS -2.
-            # -------------------------------------------------
+            # Once that candle has already been evaluated,
+            # signal_triggered is forced FALSE until a new
+            # completed candle arrives.
+            # ----------------------------------------------------
 
-            closed_idx = -2
-
-            signal_candle_time = str(
-                df["date"].iloc[closed_idx]
+            is_new_closed_candle = (
+                closed_candle_time
+                != last_published_closed_candle
             )
 
-            # -------------------------------------------------
-            # INDICATORS
-            #
-            # Indicators use available historical data.
-            # No waiting for next candle close.
-            # -------------------------------------------------
+            if is_new_closed_candle:
 
-            rsi_v = calculate_tv_rsi(
-                df["close"],
-                14
-            )
-
-            ema9 = float(
-                df["close"]
-                .ewm(
-                    span=9,
-                    adjust=False
-                )
-                .mean()
-                .iloc[-1]
-            )
-
-            ema20 = float(
-                df["close"]
-                .ewm(
-                    span=20,
-                    adjust=False
-                )
-                .mean()
-                .iloc[-1]
-            )
-
-            # -------------------------------------------------
-            # TODAY HIGH / LOW
-            # -------------------------------------------------
-
-            now_dt = now_ist()
-
-            today_str = now_dt.strftime(
-                "%Y-%m-%d"
-            )
-
-            df_t = df[
-                df["datetime"]
-                .dt.strftime("%Y-%m-%d")
-                == today_str
-            ]
-
-            if not df_t.empty:
-
-                intraday_high = float(
-                    df_t["high"].max()
-                )
-
-                intraday_low = float(
-                    df_t["low"].min()
+                last_published_closed_candle = (
+                    closed_candle_time
                 )
 
             else:
 
-                intraday_high = spot + 50.0
-                intraday_low = spot - 50.0
-
-            # -------------------------------------------------
-            # COMPLETED CANDLE DATA
-            # -------------------------------------------------
-
-            c_open = float(
-                df["open"].iloc[closed_idx]
-            )
-
-            c_close = float(
-                df["close"].iloc[closed_idx]
-            )
-
-            c_high = float(
-                df["high"].iloc[closed_idx]
-            )
-
-            c_low = float(
-                df["low"].iloc[closed_idx]
-            )
-
-            candle_range = abs(
-                c_high - c_low
-            )
-
-            if candle_range <= 0:
-                candle_range = 0.01
-
-            candle_body = abs(
-                c_close - c_open
-            )
-
-            if candle_body <= 0:
-                candle_body = 0.01
-
-            top_wick = max(
-                0.0,
-                c_high - max(
-                    c_open,
-                    c_close
-                )
-            )
-
-            bottom_wick = max(
-                0.0,
-                min(
-                    c_open,
-                    c_close
-                ) - c_low
-            )
-
-            # -------------------------------------------------
-            # PSYCHOLOGICAL LEVEL
-            # -------------------------------------------------
-
-            psy_level = int(
-                round(spot / 50.0) * 50
-            )
-
-            # -------------------------------------------------
-            # CANDLE SIZE
-            # -------------------------------------------------
-
-            is_candle_size_valid = (
-                12.0 <= candle_range <= 25.0
-            )
-
-            # -------------------------------------------------
-            # REJECTION
-            # -------------------------------------------------
-
-            upper_rejection = (
-                abs(c_high - psy_level) <= 25.0
-                and top_wick >= candle_range * 0.50
-            )
-
-            lower_rejection = (
-                abs(c_low - psy_level) <= 25.0
-                and bottom_wick >= candle_range * 0.50
-            )
-
-            is_rejection = (
-                upper_rejection
-                or lower_rejection
-            )
-
-            # -------------------------------------------------
-            # PULLBACK
-            #
-            # Current LIVE spot can be compared with EMA9.
-            # No candle-close wait here.
-            # -------------------------------------------------
-
-            is_pullback = (
-                not is_rejection
-                and abs(spot - ema9) <= 25.0
-            )
-
-            # -------------------------------------------------
-            # DEFAULT
-            # -------------------------------------------------
-
-            otype = "NONE"
-
-            rsi_status = "FAIL"
-            ema_status = "FAIL"
-
-            setup_name = "NONE"
-
-            candle_confirmed = False
-
-            # -------------------------------------------------
-            # MAJOR REJECTION
-            # -------------------------------------------------
-
-            if is_rejection:
-
-                if upper_rejection:
-                    otype = "PE"
-
-                elif lower_rejection:
-                    otype = "CE"
-
-                rsi_status = "PASS"
-                ema_status = "PASS"
-
-                setup_name = "Major Rejection"
-
-                candle_confirmed = True
-
-            # -------------------------------------------------
-            # PULLBACK
-            # -------------------------------------------------
-
-            elif is_pullback:
-
-                otype = (
-                    "CE"
-                    if spot >= ema9
-                    else "PE"
-                )
-
-                rsi_status = (
-                    "PASS"
-                    if 45.0 <= rsi_v <= 55.0
-                    else "FAIL"
-                )
-
-                ema_status = (
-                    "PASS"
-                    if abs(spot - ema9) <= 15.0
-                    else "FAIL"
-                )
-
-                setup_name = "Pullback"
-
-                # Fixed 5% opposite-wick rule.
-                if otype == "CE":
-                    opposite_wick = top_wick
-                else:
-                    opposite_wick = bottom_wick
-
-                candle_confirmed = (
-                    opposite_wick <= candle_body * 0.05
-                )
-
-            # -------------------------------------------------
-            # BREAKOUT
-            # -------------------------------------------------
-
-            else:
-
-                if spot > ema9:
-
-                    otype = "CE"
-
-                    rsi_status = (
-                        "PASS"
-                        if rsi_v >= 60.0
-                        else "FAIL"
-                    )
-
-                else:
-
-                    otype = "PE"
-
-                    rsi_status = (
-                        "PASS"
-                        if rsi_v <= 40.0
-                        else "FAIL"
-                    )
-
-                ema_status = "PASS"
-
-                setup_name = "Breakout"
-
-                if otype == "CE":
-                    opposite_wick = top_wick
-                else:
-                    opposite_wick = bottom_wick
-
-                candle_confirmed = (
-                    opposite_wick <= candle_body * 0.05
-                )
-
-            # -------------------------------------------------
-            # TRADE TYPE
-            # -------------------------------------------------
-
-            trade_type = (
-                f"{otype}_BUY"
-                if otype != "NONE"
-                else "NONE"
-            )
-
-            # -------------------------------------------------
-            # VOLUME
-            #
-            # Previous 20 completed candles.
-            # Signal candle itself is included as current_volume.
-            # -------------------------------------------------
-
-            volume_window = df[
-                "volume"
-            ].iloc[-22:-2]
-
-            volume_window = volume_window.dropna()
-
-            vol_avg = float(
-                volume_window.mean()
-            ) if not volume_window.empty else 0.0
-
-            current_volume = float(
-                df["volume"].iloc[closed_idx]
-            ) if pd.notna(
-                df["volume"].iloc[closed_idx]
-            ) else 0.0
-
-            if vol_avg > 0:
-
-                vol_ratio = round(
-                    current_volume / vol_avg,
-                    2
-                )
-
-            else:
-
-                vol_ratio = 0.0
-
-            vol_status = (
-                "PASS"
-                if vol_ratio >= 1.20
-                else "FAIL"
-            )
-
-            # -------------------------------------------------
-            # RUNWAY
-            # -------------------------------------------------
-
-            if otype == "CE":
-
-                runway_distance = (
-                    intraday_high - spot
-                )
-
-            elif otype == "PE":
-
-                runway_distance = (
-                    spot - intraday_low
-                )
-
-            else:
-
-                runway_distance = 0.0
-
-            runway_distance = max(
-                0.0,
-                runway_distance
-            )
-
-            runway_status = (
-                "PASS"
-                if runway_distance >= 15.0
-                else "FAIL"
-            )
-
-            # -------------------------------------------------
-            # FINAL GATE
-            # -------------------------------------------------
-
-            signal_gate = (
-                otype != "NONE"
-                and rsi_status == "PASS"
-                and ema_status == "PASS"
-                and vol_status == "PASS"
-                and runway_status == "PASS"
-            )
-
-            final_trigger = (
-                signal_gate
-                and is_candle_size_valid
-                and candle_confirmed
-            )
-
-            # -------------------------------------------------
-            # REASON
-            # -------------------------------------------------
-
-            if not signal_gate:
-
-                failed = []
-
-                if rsi_status != "PASS":
-                    failed.append("RSI")
-
-                if ema_status != "PASS":
-                    failed.append("EMA")
-
-                if vol_status != "PASS":
-                    failed.append("VOLUME")
-
-                if runway_status != "PASS":
-                    failed.append("RUNWAY")
-
-                reason = (
-                    f"🔒 {setup_name} LOCK | "
-                    f"Failed: "
-                    f"{', '.join(failed) if failed else 'SETUP'}"
-                )
-
-            elif not is_candle_size_valid:
-
-                reason = (
-                    f"⚠️ Size Lock | "
-                    f"Candle range "
-                    f"{candle_range:.1f} pts "
-                    f"(required 12-25)"
-                )
-
-            elif not candle_confirmed:
-
-                reason = (
-                    "⚠️ Marubozu Lock | "
-                    "Opposite wick exceeds 5% "
-                    "of candle body"
-                )
-
-            else:
-
-                reason = (
-                    f"🟢 SIGNAL READY | "
-                    f"{setup_name} | "
-                    f"{trade_type} | "
-                    f"Runway "
-                    f"{runway_distance:.1f} pts"
-                )
-
-            # -------------------------------------------------
-            # OPTION STRIKE
-            # -------------------------------------------------
-
-            option_strike = int(
-                round(spot / 50.0) * 50
-            )
-
-            # -------------------------------------------------
-            # TARGET REFERENCE
-            # -------------------------------------------------
-
-            if otype == "CE":
-
-                next_wall = intraday_high
-
-            elif otype == "PE":
-
-                next_wall = intraday_low
-
-            else:
-
-                next_wall = spot
-
-            # -------------------------------------------------
-            # OUTPUT
-            # -------------------------------------------------
+                # Same closed candle:
+                # Do not repeatedly trigger paper entries.
+                signal["signal_triggered"] = False
+
+                if signal.get("ready"):
+
+                    if "SIGNAL READY" in str(
+                        signal.get(
+                            "algo_reason",
+                            "",
+                        )
+                    ):
+
+                        signal["algo_reason"] = (
+                            "WAIT | Same completed candle "
+                            "already evaluated"
+                        )
+
+            # ----------------------------------------------------
+            # FINAL PAYLOAD
+            # ----------------------------------------------------
 
             payload = {
 
-                "live_spot": spot,
+                # ------------------------------
+                # LIVE DATA
+                # ------------------------------
 
-                "rsi_v": round(
-                    rsi_v,
-                    2
-                ),
+                "live_spot":
+                    spot,
 
-                "ema9": round(
-                    ema9,
-                    2
-                ),
-
-                "ema20": round(
-                    ema20,
-                    2
-                ),
-
-                "rsi_status":
-                    rsi_status,
-
-                "ema_status":
-                    ema_status,
-
-                "vol_status":
-                    vol_status,
-
-                "vol_val":
-                    f"{vol_ratio}x",
-
-                "runway_status":
-                    runway_status,
-
-                "runway_val":
-                    f"{runway_distance:.1f} pts",
-
-                "intraday_high":
-                    intraday_high,
-
-                "intraday_low":
-                    intraday_low,
-
-                "psy_level":
-                    psy_level,
-
-                "algo_reason":
-                    reason,
-
-                "signal_triggered":
-                    bool(final_trigger),
-
-                "trade_type":
-                    trade_type,
-
-                "otype":
-                    otype,
-
-                "option_strike":
-                    option_strike,
-
-                "next_w":
-                    next_wall,
-
-                "run_df":
-                    runway_distance,
-
-                "c_open":
-                    c_open,
-
-                "c_close":
-                    c_close,
-
-                "c_low":
-                    c_low,
-
-                "c_high":
-                    c_high,
-
-                "candle_range":
-                    candle_range,
-
-                "candle_body":
-                    candle_body,
-
-                "top_wick":
-                    top_wick,
-
-                "bottom_wick":
-                    bottom_wick,
-
-                "candle_size_valid":
-                    bool(
-                        is_candle_size_valid
+                "spot_timestamp":
+                    raw.get(
+                        "spot_timestamp"
                     ),
 
-                "candle_confirmed":
-                    bool(
-                        candle_confirmed
+                # ------------------------------
+                # LIVE INDICATORS
+                # ------------------------------
+
+                **live_snapshot,
+
+                # ------------------------------
+                # COMPLETED-CANDLE STRATEGY
+                # ------------------------------
+
+                **signal,
+
+                # ------------------------------
+                # Explicit candle status
+                # ------------------------------
+
+                "signal_candle_type":
+                    "COMPLETED",
+
+                "signal_candle_time":
+                    closed_candle_time,
+
+                "live_candle_time":
+                    live_snapshot.get(
+                        "live_candle_time"
                     ),
 
-                "strategy_used":
-                    setup_name,
+                # ------------------------------
+                # Backend status
+                # ------------------------------
 
-                "candle_time":
-                    signal_candle_time,
+                "engine_status":
+                    "RUNNING",
 
                 "calculated_at":
-                    now_dt.isoformat(),
+                    now_ist().isoformat(),
+
+                "data_timestamp":
+                    raw.get(
+                        "worker_timestamp"
+                    ),
+
+                # ------------------------------
+                # Raw source status
+                # ------------------------------
+
+                "websocket_connected":
+                    raw.get(
+                        "websocket_connected",
+                        False,
+                    ),
+
+                "future_quote":
+                    raw.get(
+                        "future_quote"
+                    ),
+
+                "future_live_candle":
+                    raw.get(
+                        "future_live_candle"
+                    ),
+
             }
 
             atomic_write_json(
-                "strategy_signal.json",
-                payload
+                SIGNAL_FILE,
+                payload,
             )
 
-            # -------------------------------------------------
-            # LOG ONLY WHEN COMPLETED CANDLE CHANGES
-            # -------------------------------------------------
-
-            if signal_candle_time != last_signal_candle:
-
-                logging.info(
-                    "🕐 Completed candle: %s | "
-                    "Spot %.2f | RSI %.2f | "
-                    "EMA9 %.2f | Setup %s | "
-                    "Signal %s",
-                    signal_candle_time,
-                    spot,
-                    rsi_v,
-                    ema9,
-                    setup_name,
-                    "READY" if final_trigger else "LOCKED"
-                )
-
-                last_signal_candle = (
-                    signal_candle_time
-                )
-
-        except Exception as err:
+        except Exception as exc:
 
             logging.exception(
                 "Indicator engine error: %s",
-                err
+                exc,
             )
 
-        # -------------------------------------------------
-        # IMPORTANT:
-        # Indicator recalculates every second.
-        # It does NOT wait for a 5-minute close.
-        # -------------------------------------------------
+        time.sleep(0.5)
 
-        time.sleep(1)
 
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
     start_indicator_engine()
