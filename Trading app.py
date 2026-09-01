@@ -1,7 +1,6 @@
 # Trading app.py
 import time, json, os
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 
 st.set_page_config(page_title="NIFTY LEDGER PRO", page_icon="⚡", layout="centered")
@@ -112,11 +111,11 @@ dhan_html = f"""
     </div>
     {trade_card_html}
 </div>"""
-components.html(dhan_html, height=520, scrolling=False)
+st.iframe(dhan_html, height=520)
 
 # ब्राऊझर लोकल स्टोरेज सिंक विजेट
 js_save_payload = f"""<script>localStorage.setItem('nifty_trade_history', '{json.dumps(ledger)}');</script>"""
-components.html(js_storage_script + js_save_payload, height=0)
+st.iframe(js_storage_script + js_save_payload, height=1)
 
 try:
     with open('device_backup.json', 'w') as backup_f: json.dump(ledger, backup_f)
