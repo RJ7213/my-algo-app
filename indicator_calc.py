@@ -120,4 +120,4 @@ def start_indicator_engine():
         except Exception as err: pass
         time.sleep(2)
 
-if __name__ == "__main__": start_indicator_engine()
+if __name__ == "__main__": start_indicator_engine() 
