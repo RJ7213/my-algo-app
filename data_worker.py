@@ -73,6 +73,8 @@ NIFTY_SPOT_TOKEN = os.getenv("NIFTY_SPOT_TOKEN", "99926000")
 DATA_RAW_FILE = "data_raw.json"
 CANDLE_CACHE_FILE = "candle_cache.json"
 CONTRACT_CACHE_FILE = "option_contract_cache.json"
+FUTURE_CANDLE_CACHE_FILE = "future_candle_cache.json"
+STRATEGY_SIGNAL_FILE = "strategy_signal.json"
 
 
 # ============================================================
@@ -151,6 +153,65 @@ def save_persisted_candles(candles, saved_at):
         )
     except Exception as exc:
         logging.debug("Candle cache save error: %s", exc)
+
+
+def load_persisted_future_candles(contract_symbol=None):
+    cached = load_json(FUTURE_CANDLE_CACHE_FILE, None)
+    if not isinstance(cached, dict):
+        return None, None
+
+    if contract_symbol and cached.get("contract") not in (None, contract_symbol):
+        return None, None
+
+    candles = valid_candles(cached.get("candles"))
+    if candles:
+        return candles, cached.get("saved_at")
+
+    return None, None
+
+
+def save_persisted_future_candles(candles, saved_at, contract_symbol):
+    try:
+        atomic_write_json(
+            FUTURE_CANDLE_CACHE_FILE,
+            {
+                "contract": contract_symbol,
+                "saved_at": saved_at,
+                "candles": candles,
+            },
+        )
+    except Exception as exc:
+        logging.debug("Future candle cache save error: %s", exc)
+
+
+def fetch_historical_candles(api, exchange, symboltoken, label, days=2):
+    now_dt = now_ist()
+    from_d = (now_dt - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+    to_d = now_dt.strftime("%Y-%m-%d %H:%M")
+
+    try:
+        logging.info("Requesting historical 5-min %s candles...", label)
+        res = api.getCandleData(
+            {
+                "exchange": exchange,
+                "symboltoken": str(symboltoken),
+                "interval": "FIVE_MINUTE",
+                "fromdate": from_d,
+                "todate": to_d,
+            }
+        )
+
+        if res and res.get("status") and res.get("data"):
+            candles = valid_candles(res.get("data"))
+            if candles:
+                logging.info("%s 5-min candles updated: %d", label, len(candles))
+                return candles
+
+        logging.warning("%s candle API returned no usable data: %s", label, res)
+    except Exception as exc:
+        logging.warning("%s candle API error: %s", label, exc)
+
+    return None
 
 
 # ============================================================
@@ -731,6 +792,23 @@ def start_backend_factory():
             spot_live_candle = None
             future_live_candle = None
 
+            # Historical + live NIFTY futures candles.
+            future_symbol = (
+                future_contract.get("tradingsymbol")
+                if future_contract
+                else None
+            )
+            cached_future_candles, future_persisted_time = (
+                load_persisted_future_candles(future_symbol)
+            )
+            future_candles = cached_future_candles or []
+
+            if future_candles:
+                logging.info(
+                    "Recovered %d cached NIFTY FUT candles",
+                    len(future_candles),
+                )
+
             # Last cumulative future volume.
             future_prev_cumulative_volume = None
 
@@ -762,6 +840,27 @@ def start_backend_factory():
 
             candle_retry_delay = 60.0
             MAX_CANDLE_RETRY = 300.0
+
+            future_last_candle_fetch = (
+                datetime.min.replace(tzinfo=IST)
+            )
+            future_last_candle_attempt = (
+                datetime.min.replace(tzinfo=IST)
+            )
+            future_candle_retry_delay = 120.0
+            MAX_FUTURE_CANDLE_RETRY = 600.0
+
+            if future_persisted_time:
+                try:
+                    future_last_candle_fetch = datetime.fromisoformat(
+                        future_persisted_time
+                    )
+                    if future_last_candle_fetch.tzinfo is None:
+                        future_last_candle_fetch = future_last_candle_fetch.replace(
+                            tzinfo=IST
+                        )
+                except Exception:
+                    pass
 
             # ----------------------------------------------------
             # WEBSOCKET
@@ -1067,6 +1166,10 @@ def start_backend_factory():
                     # ------------------------------------------------
                     # LIVE FUTURE 5-MIN CANDLE
                     # ------------------------------------------------
+                    # Keep the same candle list between ticks. The old
+                    # code recreated [] every loop, so FUT volume was
+                    # effectively one-tick volume and never accumulated.
+                    # ------------------------------------------------
 
                     if future_tick:
 
@@ -1082,12 +1185,18 @@ def start_backend_factory():
                             or 0.0
                         )
 
-                        future_live_candle = update_live_candle(
-                            [],
+                        future_candles = update_live_candle(
+                            future_candles,
                             future_tick["timestamp"],
                             future_price,
                             volume_increment,
-                        )[-1]
+                        )[-300:]
+
+                        future_live_candle = (
+                            future_candles[-1]
+                            if future_candles
+                            else None
+                        )
 
                     # ------------------------------------------------
                     # HISTORICAL SPOT CANDLE BACKFILL
@@ -1198,6 +1307,61 @@ def start_backend_factory():
                             )
 
                     # ------------------------------------------------
+                    # HISTORICAL NIFTY FUTURES CANDLE BACKFILL
+                    # ------------------------------------------------
+                    # Futures volume is the canonical volume source for
+                    # the indicator engine. Fetch infrequently to avoid
+                    # Angel One rate-limit errors; WebSocket keeps the
+                    # current candle live between REST refreshes.
+                    # ------------------------------------------------
+
+                    if future_contract:
+                        future_seconds_since_success = (
+                            now_dt - future_last_candle_fetch
+                        ).total_seconds()
+                        future_seconds_since_attempt = (
+                            now_dt - future_last_candle_attempt
+                        ).total_seconds()
+
+                        future_candle_due = (
+                            not future_candles
+                            or future_seconds_since_success >= 300
+                        )
+                        future_retry_allowed = (
+                            future_seconds_since_attempt
+                            >= future_candle_retry_delay
+                        )
+
+                        if future_candle_due and future_retry_allowed:
+                            future_last_candle_attempt = now_dt
+
+                            fresh_future = fetch_historical_candles(
+                                api,
+                                "NFO",
+                                future_contract["symboltoken"],
+                                "NIFTY FUTURES",
+                                days=2,
+                            )
+
+                            if fresh_future:
+                                future_candles = fresh_future
+                                future_last_candle_fetch = now_dt
+                                future_candle_retry_delay = 120.0
+                                save_persisted_future_candles(
+                                    future_candles,
+                                    now_dt.isoformat(),
+                                    future_symbol,
+                                )
+                            else:
+                                future_candle_retry_delay = min(
+                                    future_candle_retry_delay * 2,
+                                    MAX_FUTURE_CANDLE_RETRY,
+                                )
+
+                    # ------------------------------------------------
+                    # MERGED CANDLES
+                    # ------------------------------------------------
+                    # ------------------------------------------------
                     # MERGED CANDLES
                     # ------------------------------------------------
 
@@ -1220,7 +1384,7 @@ def start_backend_factory():
                     desired_hint = None
 
                     strat = load_json(
-                        "strategy_signal.json",
+                        STRATEGY_SIGNAL_FILE,
                         {},
                     )
 
@@ -1483,6 +1647,16 @@ def start_backend_factory():
 
                         "future_live_candle":
                             future_live_candle,
+
+                        "future_candles":
+                            future_candles[-300:],
+
+                        "future_candle_last_success":
+                            (
+                                future_last_candle_fetch.isoformat()
+                                if future_candles
+                                else None
+                            ),
 
                         # ------------------------------
                         # RAW OPTION
