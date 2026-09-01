@@ -1,27 +1,22 @@
 # data_worker.py
-# ============================================================
-# NIFTY LIVE DATA WORKER
-# ============================================================
 #
-# Angel One REST:
-#   1. Historical 5-min candles
-#   2. ONE-TIME option master/searchScrip per process
+# ONLY component that talks to Angel One.
 #
-# Angel One WebSocket:
-#   1. NIFTY live LTP
-#   2. Selected option live LTP
+# WebSocket:
+#   - NIFTY live LTP
+#   - selected option live LTP
 #
-# IMPORTANT FIXES:
-#   - NO ltpData() polling
-#   - searchScrip() is NOT called whenever strike changes
-#   - Option contracts are cached in memory
-#   - Resolved contracts are also persisted locally
-#   - NIFTY/FPI/NXT50 contracts are separated
-#   - Candle API has proper backoff after rate-limit errors
-#   - Existing candles are preserved during API failure
-#   - Existing option contract is preserved during temporary errors
-#   - WebSocket remains the live price source
-# ============================================================
+# REST:
+#   - historical 5-min candles
+#   - option contract resolution
+#
+# IMPORTANT:
+#   - No REST LTP polling.
+#   - Historical candles are fetched approximately once/minute.
+#   - Candle API failure does NOT erase existing candle cache.
+#   - Option search happens ONLY when strike/type changes.
+#   - If candle API is temporarily rate-limited, worker keeps
+#     the last good candle data and retries later.
 
 import json
 import logging
@@ -34,19 +29,11 @@ from datetime import datetime, timedelta, timezone
 import pyotp
 
 
-# ============================================================
-# LOGGING
-# ============================================================
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-
-# ============================================================
-# ENVIRONMENT
-# ============================================================
 
 CID = os.getenv("ANGEL_CLIENT_CODE")
 AKEY = os.getenv("ANGEL_API_KEY")
@@ -58,25 +45,20 @@ NIFTY_SPOT_TOKEN = os.getenv(
     "99926000"
 )
 
-IST = timezone(timedelta(hours=5, minutes=30))
+IST = timezone(
+    timedelta(
+        hours=5,
+        minutes=30
+    )
+)
 
-CONTRACT_CACHE_FILE = "option_contract_cache.json"
-CANDLE_CACHE_FILE = "candle_cache.json"
-
-
-# ============================================================
-# TIME
-# ============================================================
 
 def now_ist():
     return datetime.now(IST)
 
 
-# ============================================================
-# SAFE JSON
-# ============================================================
-
 def atomic_write_json(path, payload):
+
     tmp = f"{path}.tmp"
 
     with open(tmp, "w") as f:
@@ -89,83 +71,37 @@ def atomic_write_json(path, payload):
     os.replace(tmp, path)
 
 
-def load_json(path, default=None):
-    if not os.path.exists(path):
-        return default
-
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-
-def valid_candles(value):
-    """Return a clean candle list or None."""
-    if not isinstance(value, list) or not value:
-        return None
-
-    cleaned = []
-    for row in value:
-        if isinstance(row, (list, tuple)) and len(row) >= 6:
-            cleaned.append(list(row[:6]))
-    return cleaned or None
-
-
-def load_persisted_candles():
-    """Recover candles after worker restart/deploy when the file exists."""
-    cached = load_json(CANDLE_CACHE_FILE, None)
-    if isinstance(cached, dict):
-        candles = valid_candles(cached.get("candles"))
-        if candles:
-            return candles, cached.get("saved_at")
-
-    raw = load_json("data_raw.json", None)
-    if isinstance(raw, dict):
-        candles = valid_candles(raw.get("candles"))
-        if candles:
-            return candles, raw.get("candle_last_success")
-
-    return None, None
-
-
-def save_persisted_candles(candles, saved_at):
-    try:
-        atomic_write_json(
-            CANDLE_CACHE_FILE,
-            {"saved_at": saved_at, "candles": candles}
-        )
-    except Exception as exc:
-        logging.debug("Candle cache save error: %s", exc)
-
-
-# ============================================================
-# EXPIRY PARSER
-# ============================================================
-
 def extract_expiry(item):
+
     raw = str(
         item.get("expiry", "") or ""
     ).strip()
 
     if raw:
+
         for fmt in (
             "%d%b%Y",
             "%d%b%y",
             "%d-%b-%Y",
             "%d-%b-%y",
-            "%Y-%m-%d",
+            "%Y-%m-%d"
         ):
+
             try:
+
                 return datetime.strptime(
                     raw.upper(),
                     fmt
                 ).date()
+
             except ValueError:
                 pass
 
     symbol = str(
-        item.get("tradingsymbol", "")
+        item.get(
+            "tradingsymbol",
+            ""
+        )
     )
 
     m = re.search(
@@ -174,26 +110,26 @@ def extract_expiry(item):
     )
 
     if m:
+
         token = m.group(1)
 
         for fmt in (
             "%d%b%Y",
-            "%d%b%y",
+            "%d%b%y"
         ):
+
             try:
+
                 return datetime.strptime(
                     token,
                     fmt
                 ).date()
+
             except ValueError:
                 pass
 
     return None
 
-
-# ============================================================
-# OPTION TYPE
-# ============================================================
 
 def option_type(item):
 
@@ -201,17 +137,28 @@ def option_type(item):
         "optiontype",
         "optionType",
         "opttype",
-        "type",
+        "type"
     ):
+
         value = str(
-            item.get(key, "")
+            item.get(
+                key,
+                ""
+            )
         ).upper().strip()
 
-        if value in ("CE", "PE"):
+        if value in (
+            "CE",
+            "PE"
+        ):
+
             return value
 
     symbol = str(
-        item.get("tradingsymbol", "")
+        item.get(
+            "tradingsymbol",
+            ""
+        )
     ).upper()
 
     if symbol.endswith("CE"):
@@ -223,25 +170,20 @@ def option_type(item):
     return ""
 
 
-# ============================================================
-# STRIKE
-# ============================================================
-
 def strike_value(item):
 
     for key in (
         "strike",
         "strikePrice",
-        "strikeprice",
+        "strikeprice"
     ):
+
         try:
 
             value = float(
                 item.get(key)
             )
 
-            # Some SmartAPI data represents
-            # strike in paise.
             if value > 100000:
                 value /= 100.0
 
@@ -249,12 +191,16 @@ def strike_value(item):
 
         except (
             TypeError,
-            ValueError,
+            ValueError
         ):
+
             pass
 
     symbol = str(
-        item.get("tradingsymbol", "")
+        item.get(
+            "tradingsymbol",
+            ""
+        )
     )
 
     m = re.search(
@@ -276,153 +222,25 @@ def strike_value(item):
             return value
 
         except ValueError:
+
             pass
 
     return None
 
 
-# ============================================================
-# VALID NIFTY OPTION FILTER
-# ============================================================
-
-def is_real_nifty_option(item):
-
-    symbol = str(
-        item.get("tradingsymbol", "")
-    ).upper()
-
-    # We want NIFTY index options only.
-    #
-    # Exclude:
-    #   NIFTYFPI
-    #   NIFTYNXT50
-    #
-    # because searchScrip("NFO","NIFTY") can return
-    # those products too.
-
-    if not symbol.startswith("NIFTY"):
-        return False
-
-    if symbol.startswith("NIFTYFPI"):
-        return False
-
-    if symbol.startswith("NIFTYNXT50"):
-        return False
-
-    return (
-        symbol.endswith("CE")
-        or symbol.endswith("PE")
-    )
-
-
-# ============================================================
-# BUILD CONTRACT FROM MASTER ITEM
-# ============================================================
-
-def make_contract(item, today):
-
-    if not is_real_nifty_option(item):
-        return None
-
-    opt_type = option_type(item)
-
-    if opt_type not in ("CE", "PE"):
-        return None
-
-    strike = strike_value(item)
-
-    if strike is None:
-        return None
-
-    expiry = extract_expiry(item)
-
-    if expiry is not None and expiry < today:
-        return None
-
-    token = (
-        item.get("symboltoken")
-        or item.get("token")
-    )
-
-    symbol = (
-        item.get("tradingsymbol")
-        or item.get("symbol")
-    )
-
-    if not token or not symbol:
-        return None
-
-    return {
-        "exchange": "NFO",
-        "tradingsymbol": str(symbol),
-        "symboltoken": str(token),
-        "strike": float(strike),
-        "option_type": opt_type,
-        "expiry": (
-            expiry.isoformat()
-            if expiry
-            else None
-        ),
-    }
-
-
-# ============================================================
-# LOAD PERSISTENT CONTRACT CACHE
-# ============================================================
-
-def load_contract_cache():
-
-    data = load_json(
-        CONTRACT_CACHE_FILE,
-        {}
-    )
-
-    if not isinstance(data, dict):
-        return {}
-
-    return data
-
-
-def save_contract_cache(cache):
-
-    try:
-
-        atomic_write_json(
-            CONTRACT_CACHE_FILE,
-            cache
-        )
-
-    except Exception as exc:
-
-        logging.debug(
-            "Contract cache save error: %s",
-            exc
-        )
-
-
-# ============================================================
-# ONE-TIME MASTER LOAD
-# ============================================================
-
-def load_nifty_option_master(api, today):
-
-    """
-    IMPORTANT:
-    searchScrip() is called ONLY ONCE after login.
-
-    The returned NIFTY contracts are converted into an
-    in-memory lookup table.
-
-    Therefore changing:
-        24100 CE -> 24050 CE -> 24150 PE
-
-    does NOT call searchScrip() again.
-    """
+def resolve_option(
+    api,
+    strike,
+    opt_type,
+    today
+):
 
     try:
 
         logging.info(
-            "📥 Loading NIFTY option master ONCE..."
+            "Resolving option: NIFTY %.0f %s",
+            float(strike),
+            opt_type
         )
 
         response = api.searchScrip(
@@ -431,158 +249,153 @@ def load_nifty_option_master(api, today):
         )
 
         if not response:
+
             logging.warning(
                 "searchScrip returned empty response"
             )
-            return {}
+
+            return None
 
         if not response.get("status"):
+
             logging.warning(
                 "searchScrip unsuccessful: %s",
                 response
             )
-            return {}
 
-        items = response.get("data") or []
+            return None
+
+        items = response.get(
+            "data"
+        ) or []
 
         if not items:
-            logging.warning(
-                "searchScrip returned zero contracts"
-            )
-            return {}
 
-        cache = {}
+            logging.warning(
+                "searchScrip returned no contracts"
+            )
+
+            return None
+
+        candidates = []
 
         for item in items:
 
-            contract = make_contract(
-                item,
-                today
-            )
-
-            if not contract:
+            if option_type(item) != opt_type:
                 continue
 
-            key = (
-                f"{int(contract['strike'])}:"
-                f"{contract['option_type']}"
+            s = strike_value(item)
+
+            if s is None:
+                continue
+
+            if abs(
+                s - float(strike)
+            ) > 0.01:
+
+                continue
+
+            expiry = extract_expiry(
+                item
             )
 
-            # Multiple expiries can exist.
-            # Keep the nearest expiry.
-            existing = cache.get(key)
+            if (
+                expiry is not None
+                and expiry < today
+            ):
 
-            if existing is None:
+                continue
 
-                cache[key] = contract
+            token = (
+                item.get("symboltoken")
+                or item.get("token")
+            )
 
-            else:
+            symbol = (
+                item.get("tradingsymbol")
+                or item.get("symbol")
+            )
 
-                old_expiry = existing.get(
-                    "expiry"
+            if not token or not symbol:
+                continue
+
+            candidates.append(
+                (
+                    expiry or today,
+                    str(symbol),
+                    str(token)
                 )
+            )
 
-                new_expiry = contract.get(
-                    "expiry"
-                )
+        if not candidates:
 
-                if old_expiry is None:
-                    cache[key] = contract
+            logging.warning(
+                "No valid option found: %.0f:%s",
+                float(strike),
+                opt_type
+            )
 
-                elif (
-                    new_expiry is not None
-                    and new_expiry < old_expiry
-                ):
-                    cache[key] = contract
+            return None
 
-        logging.info(
-            "🟢 NIFTY option master loaded: %d contracts",
-            len(cache)
+        candidates.sort(
+            key=lambda x: (
+                x[0],
+                x[1]
+            )
         )
 
-        return cache
+        expiry, symbol, token = (
+            candidates[0]
+        )
+
+        contract = {
+
+            "exchange":
+                "NFO",
+
+            "tradingsymbol":
+                symbol,
+
+            "symboltoken":
+                token,
+
+            "strike":
+                float(strike),
+
+            "option_type":
+                opt_type,
+
+            "expiry":
+                expiry.isoformat()
+                if expiry
+                else None,
+        }
+
+        logging.info(
+            "🟢 Option resolved: %s | token=%s | expiry=%s",
+            symbol,
+            token,
+            expiry
+        )
+
+        return contract
 
     except Exception as exc:
 
-        logging.warning(
-            "⚠️ NIFTY option master load failed: %s",
+        logging.error(
+            "Option resolution error: %s",
             exc
         )
 
-        return {}
+        return None
 
-
-# ============================================================
-# RESOLVE FROM LOCAL MASTER
-# ============================================================
-
-def resolve_option_from_cache(
-    option_master,
-    persistent_cache,
-    strike,
-    opt_type,
-    today,
-):
-    """
-    ZERO REST CALLS.
-    """
-
-    key = (
-        f"{int(float(strike))}:"
-        f"{str(opt_type).upper()}"
-    )
-
-    # --------------------------------------------------------
-    # 1. Current process master
-    # --------------------------------------------------------
-
-    contract = option_master.get(key)
-
-    if contract:
-
-        expiry = contract.get("expiry")
-
-        if (
-            not expiry
-            or expiry >= today.isoformat()
-        ):
-            return contract
-
-    # --------------------------------------------------------
-    # 2. Persistent cache fallback
-    # --------------------------------------------------------
-
-    contract = persistent_cache.get(key)
-
-    if contract:
-
-        expiry = contract.get("expiry")
-
-        if (
-            not expiry
-            or expiry >= today.isoformat()
-        ):
-
-            logging.info(
-                "🟡 Using persistent cached option: %s",
-                contract.get(
-                    "tradingsymbol"
-                )
-            )
-
-            return contract
-
-    return None
-
-
-# ============================================================
-# MAIN BACKEND
-# ============================================================
 
 def start_backend_factory():
 
     from SmartApi import SmartConnect
-    from SmartApi.smartWebSocketV2 import SmartWebSocketV2
+    from SmartApi.smartWebSocketV2 import (
+        SmartWebSocketV2
+    )
 
     while True:
 
@@ -590,18 +403,15 @@ def start_backend_factory():
 
         try:
 
-            # ====================================================
-            # ENV CHECK
-            # ====================================================
-
             if not all(
                 (
                     CID,
                     AKEY,
                     PIN,
-                    TKEY,
+                    TKEY
                 )
             ):
+
                 raise RuntimeError(
                     "ANGEL_CLIENT_CODE/API_KEY/PIN/"
                     "TOTP_SECRET environment variables "
@@ -611,10 +421,6 @@ def start_backend_factory():
             logging.info(
                 "Angel One live data worker starting..."
             )
-
-            # ====================================================
-            # LOGIN
-            # ====================================================
 
             api = SmartConnect(
                 api_key=AKEY,
@@ -638,15 +444,21 @@ def start_backend_factory():
                 not session
                 or not session.get("status")
             ):
+
                 raise RuntimeError(
                     f"API session failed: {session}"
                 )
 
-            auth_token = session["data"]["jwtToken"]
+            auth_token = (
+                session["data"]["jwtToken"]
+            )
 
-            feed_token = api.getfeedToken()
+            feed_token = (
+                api.getfeedToken()
+            )
 
             if not feed_token:
+
                 raise RuntimeError(
                     "Unable to obtain SmartAPI feed token"
                 )
@@ -655,94 +467,45 @@ def start_backend_factory():
                 "🟢 Angel One API session ready"
             )
 
-            # ====================================================
-            # LOCAL STATE
-            # ====================================================
+            # -------------------------------------------------
+            # CANDLE CACHE
+            # -------------------------------------------------
 
-            # Recover the last good candle set before making any REST call.
-            # This prevents a temporary API/rate-limit error from resetting
-            # the indicator engine back to 0/22.
-            cached_candles, persisted_candle_time = load_persisted_candles()
+            cached_candles = []
 
-            if cached_candles:
-                logging.info(
-                    "🟢 Recovered cached 5-min candles: %d candles",
-                    len(cached_candles)
-                )
-
-            # Last successful candle update
-            last_candle_fetch = datetime.min.replace(tzinfo=IST)
-            if persisted_candle_time:
-                try:
-                    last_candle_fetch = datetime.fromisoformat(
-                        persisted_candle_time
-                    )
-                    if last_candle_fetch.tzinfo is None:
-                        last_candle_fetch = last_candle_fetch.replace(tzinfo=IST)
-                except Exception:
-                    last_candle_fetch = datetime.min.replace(tzinfo=IST)
-
-            # Last candle API attempt
-            last_candle_attempt = (
+            last_candle_fetch = (
                 datetime.min.replace(
                     tzinfo=IST
                 )
             )
 
-            # Dynamic retry delay.
-            # Starts at 60 sec.
-            # On rate-limit/error it increases.
-            candle_retry_delay = 60.0
+            candle_retry_after = (
+                datetime.min.replace(
+                    tzinfo=IST
+                )
+            )
 
-            # Maximum retry delay = 5 minutes.
-            MAX_CANDLE_RETRY = 300.0
+            # -------------------------------------------------
+            # OPTION STATE
+            # -------------------------------------------------
 
-            # Option contract state
             option_contract = None
             option_hint_key = None
 
-            # ----------------------------------------------------
-            # Load persistent contract cache
-            # ----------------------------------------------------
-
-            persistent_contract_cache = (
-                load_contract_cache()
-            )
-
-            # ----------------------------------------------------
-            # Load option master ONCE
-            # ----------------------------------------------------
-
-            option_master = load_nifty_option_master(
-                api,
-                now_ist().date()
-            )
-
-            # Merge loaded contracts into persistent cache.
-            if option_master:
-
-                persistent_contract_cache.update(
-                    option_master
-                )
-
-                save_contract_cache(
-                    persistent_contract_cache
-                )
-
-            # ====================================================
-            # TICK STATE
-            # ====================================================
+            # -------------------------------------------------
+            # TICKS
+            # -------------------------------------------------
 
             tick_lock = threading.Lock()
 
             ticks = {
                 "nifty": None,
-                "option": None,
+                "option": None
             }
 
-            # ====================================================
+            # -------------------------------------------------
             # WEBSOCKET
-            # ====================================================
+            # -------------------------------------------------
 
             sws = SmartWebSocketV2(
                 auth_token,
@@ -752,10 +515,6 @@ def start_backend_factory():
             )
 
             websocket_connected = False
-
-            # ====================================================
-            # WEBSOCKET OPEN
-            # ====================================================
 
             def on_open(wsapp):
 
@@ -769,10 +528,6 @@ def start_backend_factory():
 
                 try:
 
-                    # ------------------------------------------------
-                    # NIFTY SUBSCRIPTION
-                    # ------------------------------------------------
-
                     sws.subscribe(
                         "nifty-algo",
                         1,
@@ -783,18 +538,14 @@ def start_backend_factory():
                                     str(
                                         NIFTY_SPOT_TOKEN
                                     )
-                                ],
+                                ]
                             }
-                        ],
+                        ]
                     )
 
                     logging.info(
-                        "🟢 NIFTY WebSocket subscription active"
+                        "🟢 NIFTY subscription active"
                     )
-
-                    # ------------------------------------------------
-                    # OPTION SUBSCRIPTION
-                    # ------------------------------------------------
 
                     if option_contract:
 
@@ -810,15 +561,8 @@ def start_backend_factory():
                                                 "symboltoken"
                                             ]
                                         )
-                                    ],
+                                    ]
                                 }
-                            ],
-                        )
-
-                        logging.info(
-                            "🟢 Existing option subscription restored: %s",
-                            option_contract[
-                                "tradingsymbol"
                             ]
                         )
 
@@ -829,11 +573,10 @@ def start_backend_factory():
                         exc
                     )
 
-            # ====================================================
-            # WEBSOCKET DATA
-            # ====================================================
-
-            def on_data(wsapp, message):
+            def on_data(
+                wsapp,
+                message
+            ):
 
                 try:
 
@@ -841,6 +584,7 @@ def start_backend_factory():
                         message,
                         dict
                     ):
+
                         return
 
                     token = str(
@@ -871,11 +615,13 @@ def start_backend_factory():
                         try:
 
                             ts = (
-                                datetime.fromtimestamp(
+                                datetime
+                                .fromtimestamp(
                                     float(ts_raw)
                                     / 1000.0,
-                                    tz=timezone.utc,
-                                ).astimezone(IST)
+                                    tz=timezone.utc
+                                )
+                                .astimezone(IST)
                             )
 
                         except Exception:
@@ -888,28 +634,23 @@ def start_backend_factory():
 
                     with tick_lock:
 
-                        # ------------------------------------------------
-                        # NIFTY
-                        # ------------------------------------------------
-
-                        if token == str(
-                            NIFTY_SPOT_TOKEN
+                        if (
+                            token
+                            == str(
+                                NIFTY_SPOT_TOKEN
+                            )
                         ):
 
                             ticks["nifty"] = {
                                 "ltp": price,
                                 "timestamp":
-                                    ts.isoformat(),
+                                    ts.isoformat()
                             }
 
                             logging.info(
                                 "🟢 NIFTY TICK: %.2f",
                                 price
                             )
-
-                        # ------------------------------------------------
-                        # OPTION
-                        # ------------------------------------------------
 
                         elif (
                             option_contract
@@ -924,7 +665,7 @@ def start_backend_factory():
                             ticks["option"] = {
                                 "ltp": price,
                                 "timestamp":
-                                    ts.isoformat(),
+                                    ts.isoformat()
                             }
 
                             logging.info(
@@ -942,20 +683,15 @@ def start_backend_factory():
                         exc
                     )
 
-            # ====================================================
-            # WEBSOCKET ERROR
-            # ====================================================
-
-            def on_error(wsapp, error):
+            def on_error(
+                wsapp,
+                error
+            ):
 
                 logging.error(
                     "🔴 SmartWebSocketV2 ERROR: %s",
                     error
                 )
-
-            # ====================================================
-            # WEBSOCKET CLOSE
-            # ====================================================
 
             def on_close(wsapp):
 
@@ -967,18 +703,10 @@ def start_backend_factory():
                     "🟠 SmartWebSocketV2 CLOSED"
                 )
 
-            # ====================================================
-            # ASSIGN CALLBACKS
-            # ====================================================
-
             sws.on_open = on_open
             sws.on_data = on_data
             sws.on_error = on_error
             sws.on_close = on_close
-
-            # ====================================================
-            # START WEBSOCKET
-            # ====================================================
 
             ws_thread = threading.Thread(
                 target=sws.connect,
@@ -991,19 +719,15 @@ def start_backend_factory():
                 "🟢 Live WebSocket worker started"
             )
 
-            # ====================================================
+            # -------------------------------------------------
             # MAIN LOOP
-            # ====================================================
+            # -------------------------------------------------
 
             while True:
 
                 now_dt = now_ist()
 
                 try:
-
-                    # =================================================
-                    # COPY TICKS SAFELY
-                    # =================================================
 
                     with tick_lock:
 
@@ -1023,56 +747,40 @@ def start_backend_factory():
                             else None
                         )
 
-                    # =================================================
-                    # NIFTY MUST COME FROM WEBSOCKET
-                    # =================================================
+                    # -------------------------------------------------
+                    # WAIT FOR WEBSOCKET NIFTY
+                    # -------------------------------------------------
 
                     if nifty_tick is None:
 
-                        logging.info(
-                            "Waiting for first NIFTY WebSocket tick..."
-                        )
-
                         time.sleep(0.5)
-
                         continue
 
                     spot = float(
                         nifty_tick["ltp"]
                     )
 
-                    # =================================================
-                    # HISTORICAL CANDLES
-                    # =================================================
+                    # -------------------------------------------------
+                    # HISTORICAL CANDLE FETCH
                     #
-                    # Normal:
-                    #   once per 60 sec
+                    # First fetch immediately.
+                    # Then approximately once/minute.
                     #
-                    # Error:
-                    #   retry after increasing backoff
-                    #
-                    # IMPORTANT:
-                    #   Existing cached candles are NEVER erased.
-                    # =================================================
-
-                    seconds_since_success = (
-                        now_dt
-                        - last_candle_fetch
-                    ).total_seconds()
-
-                    seconds_since_attempt = (
-                        now_dt
-                        - last_candle_attempt
-                    ).total_seconds()
+                    # On failure, KEEP old cache.
+                    # -------------------------------------------------
 
                     candle_due = (
-                        cached_candles is None
-                        or seconds_since_success >= 60
+                        not cached_candles
+                        or (
+                            now_dt
+                            - last_candle_fetch
+                        ).total_seconds()
+                        >= 60
                     )
 
                     retry_allowed = (
-                        seconds_since_attempt
-                        >= candle_retry_delay
+                        now_dt
+                        >= candle_retry_after
                     )
 
                     if (
@@ -1080,34 +788,41 @@ def start_backend_factory():
                         and retry_allowed
                     ):
 
-                        last_candle_attempt = now_dt
-
                         from_d = (
                             now_dt
-                            - timedelta(days=2)
+                            - timedelta(
+                                days=2
+                            )
                         ).strftime(
                             "%Y-%m-%d %H:%M"
                         )
 
-                        to_d = now_dt.strftime(
-                            "%Y-%m-%d %H:%M"
+                        to_d = (
+                            now_dt.strftime(
+                                "%Y-%m-%d %H:%M"
+                            )
                         )
 
                         try:
 
                             logging.info(
-                                "📡 Requesting 5-min candle data..."
+                                "Fetching 5-min historical candles..."
                             )
 
                             res = api.getCandleData(
                                 {
-                                    "exchange": "NSE",
+                                    "exchange":
+                                        "NSE",
+
                                     "symboltoken":
                                         NIFTY_SPOT_TOKEN,
+
                                     "interval":
                                         "FIVE_MINUTE",
+
                                     "fromdate":
                                         from_d,
+
                                     "todate":
                                         to_d,
                                 }
@@ -1119,80 +834,86 @@ def start_backend_factory():
                                 and res.get("data")
                             ):
 
-                                fresh_candles = valid_candles(res.get("data"))
+                                new_candles = (
+                                    res["data"]
+                                )
 
-                                if fresh_candles:
-                                    cached_candles = fresh_candles
-                                    last_candle_fetch = now_dt
-                                    save_persisted_candles(
-                                        cached_candles,
-                                        now_dt.isoformat()
+                                if len(
+                                    new_candles
+                                ) >= 22:
+
+                                    cached_candles = (
+                                        new_candles
                                     )
-
-                                    # Reset backoff after success.
-                                    candle_retry_delay = 60.0
 
                                     logging.info(
-                                        "🟢 5-min candles updated: %d candles",
-                                        len(cached_candles)
+                                        "🟢 5-min candles updated: %d",
+                                        len(
+                                            cached_candles
+                                        )
                                     )
+
                                 else:
+
                                     logging.warning(
-                                        "⚠️ Candle API returned malformed/empty candle data"
+                                        "Only %d candles returned",
+                                        len(
+                                            new_candles
+                                        )
                                     )
-                                    candle_retry_delay = min(
-                                        candle_retry_delay * 2,
-                                        MAX_CANDLE_RETRY
+
+                                last_candle_fetch = (
+                                    now_dt
+                                )
+
+                                candle_retry_after = (
+                                    now_dt
+                                    + timedelta(
+                                        seconds=30
                                     )
+                                )
 
                             else:
 
                                 logging.warning(
-                                    "⚠️ 5-min candle API returned no data"
+                                    "5-min candle API returned no data"
                                 )
 
-                                candle_retry_delay = min(
-                                    candle_retry_delay * 2,
-                                    MAX_CANDLE_RETRY
+                                candle_retry_after = (
+                                    now_dt
+                                    + timedelta(
+                                        seconds=30
+                                    )
+                                )
+
+                                last_candle_fetch = (
+                                    now_dt
                                 )
 
                         except Exception as candle_err:
 
-                            error_text = str(
+                            logging.warning(
+                                "Candle API error: %s",
                                 candle_err
                             )
 
-                            logging.warning(
-                                "⚠️ Candle API error: %s",
-                                error_text
+                            # Do NOT clear cached_candles.
+                            # Do NOT retry continuously.
+
+                            last_candle_fetch = (
+                                now_dt
                             )
 
-                            # ------------------------------------------------
-                            # IMPORTANT RATE-LIMIT FIX
-                            # ------------------------------------------------
-                            #
-                            # If Angel One says:
-                            # "Access denied because of exceeding access rate"
-                            #
-                            # DO NOT immediately retry.
-                            #
-                            # Backoff:
-                            # 60 sec -> 120 sec -> 240 sec -> 300 sec
-                            # ------------------------------------------------
-
-                            candle_retry_delay = min(
-                                candle_retry_delay * 2,
-                                MAX_CANDLE_RETRY
+                            candle_retry_after = (
+                                now_dt
+                                + timedelta(
+                                    seconds=30
+                                )
                             )
 
-                            logging.warning(
-                                "⏳ Next candle API retry in %.0f seconds",
-                                candle_retry_delay
-                            )
-
-                    # =================================================
+                    # -------------------------------------------------
                     # READ STRATEGY SIGNAL
-                    # =================================================
+                    # -------------------------------------------------
 
                     desired_hint = None
 
@@ -1202,22 +923,34 @@ def start_backend_factory():
 
                         try:
 
-                            strat = load_json(
+                            with open(
                                 "strategy_signal.json",
-                                {}
+                                "r"
+                            ) as sf:
+
+                                strat = json.load(
+                                    sf
+                                )
+
+                            otype = strat.get(
+                                "otype"
+                            )
+
+                            strike = strat.get(
+                                "option_strike"
                             )
 
                             if (
-                                strat.get("otype")
-                                and
-                                strat.get(
-                                    "option_strike"
-                                ) is not None
+                                otype in (
+                                    "CE",
+                                    "PE"
+                                )
+                                and strike is not None
                             ):
 
                                 desired_hint = (
-                                    f"{int(float(strat['option_strike']))}:"
-                                    f"{str(strat['otype']).upper()}"
+                                    f"{int(float(strike))}:"
+                                    f"{otype}"
                                 )
 
                         except Exception as signal_err:
@@ -1227,14 +960,9 @@ def start_backend_factory():
                                 signal_err
                             )
 
-                    # =================================================
-                    # OPTION CONTRACT CHANGE
-                    # =================================================
-                    #
-                    # NO searchScrip here.
-                    #
-                    # Resolve directly from option_master/cache.
-                    # =================================================
+                    # -------------------------------------------------
+                    # RESOLVE OPTION ONLY WHEN HINT CHANGES
+                    # -------------------------------------------------
 
                     if (
                         desired_hint
@@ -1249,18 +977,11 @@ def start_backend_factory():
                             )
                         )
 
-                        strike_value_requested = (
-                            float(strike_s)
-                        )
-
-                        resolved = (
-                            resolve_option_from_cache(
-                                option_master,
-                                persistent_contract_cache,
-                                strike_value_requested,
-                                opt_type,
-                                now_dt.date(),
-                            )
+                        resolved = resolve_option(
+                            api,
+                            float(strike_s),
+                            opt_type,
+                            now_dt.date()
                         )
 
                         if resolved:
@@ -1273,69 +994,11 @@ def start_backend_factory():
                                 else None
                             )
 
-                            new_token = str(
-                                resolved[
-                                    "symboltoken"
-                                ]
-                            )
-
-                            # ------------------------------------------------
-                            # Don't resubscribe to same token.
-                            # ------------------------------------------------
-
-                            if old_token != new_token:
-
-                                # --------------------------------------------
-                                # Unsubscribe old option
-                                # --------------------------------------------
-
-                                if old_token:
-
-                                    try:
-
-                                        sws.unsubscribe(
-                                            "option-algo",
-                                            1,
-                                            [
-                                                {
-                                                    "exchangeType": 2,
-                                                    "tokens": [
-                                                        str(
-                                                            old_token
-                                                        )
-                                                    ],
-                                                }
-                                            ],
-                                        )
-
-                                    except Exception as unsub_err:
-
-                                        logging.debug(
-                                            "Option unsubscribe warning: %s",
-                                            unsub_err
-                                        )
-
-                                # --------------------------------------------
-                                # Set new contract
-                                # --------------------------------------------
-
-                                option_contract = resolved
-
-                                option_hint_key = (
-                                    desired_hint
-                                )
-
-                                with tick_lock:
-
-                                    ticks["option"] = None
-
-                                # --------------------------------------------
-                                # Subscribe new option
-                                # --------------------------------------------
+                            if old_token:
 
                                 try:
 
-                                    sws.subscribe(
+                                    sws.unsubscribe(
                                         "option-algo",
                                         1,
                                         [
@@ -1343,58 +1006,68 @@ def start_backend_factory():
                                                 "exchangeType": 2,
                                                 "tokens": [
                                                     str(
-                                                        option_contract[
-                                                            "symboltoken"
-                                                        ]
+                                                        old_token
                                                     )
-                                                ],
+                                                ]
                                             }
-                                        ],
+                                        ]
                                     )
 
-                                    logging.info(
-                                        "🟢 OPTION WebSocket subscription active: %s | token=%s | expiry=%s",
-                                        option_contract[
-                                            "tradingsymbol"
-                                        ],
-                                        option_contract[
-                                            "symboltoken"
-                                        ],
-                                        option_contract.get(
-                                            "expiry"
-                                        )
+                                except Exception as unsub_err:
+
+                                    logging.debug(
+                                        "Option unsubscribe warning: %s",
+                                        unsub_err
                                     )
 
-                                except Exception as sub_err:
+                            option_contract = (
+                                resolved
+                            )
 
-                                    logging.warning(
-                                        "Option subscribe error: %s",
-                                        sub_err
-                                    )
-
-                            else:
-
-                                option_contract = resolved
-                                option_hint_key = (
-                                    desired_hint
-                                )
-
-                        else:
-
-                            # ------------------------------------------------
-                            # IMPORTANT:
-                            # Don't destroy a working option contract just
-                            # because a new strike isn't available.
-                            # ------------------------------------------------
-
-                            logging.warning(
-                                "⚠️ Option not found in local master/cache: %s",
+                            option_hint_key = (
                                 desired_hint
                             )
 
-                    # =================================================
-                    # BUILD OPTION QUOTE
-                    # =================================================
+                            with tick_lock:
+
+                                ticks["option"] = None
+
+                            try:
+
+                                sws.subscribe(
+                                    "option-algo",
+                                    1,
+                                    [
+                                        {
+                                            "exchangeType": 2,
+                                            "tokens": [
+                                                str(
+                                                    option_contract[
+                                                        "symboltoken"
+                                                    ]
+                                                )
+                                            ]
+                                        }
+                                    ]
+                                )
+
+                                logging.info(
+                                    "🟢 OPTION subscription active: %s",
+                                    option_contract[
+                                        "tradingsymbol"
+                                    ]
+                                )
+
+                            except Exception as sub_err:
+
+                                logging.warning(
+                                    "Option subscribe error: %s",
+                                    sub_err
+                                )
+
+                    # -------------------------------------------------
+                    # OPTION QUOTE
+                    # -------------------------------------------------
 
                     option_quote = None
 
@@ -1411,14 +1084,15 @@ def start_backend_factory():
                             "timestamp":
                                 option_tick[
                                     "timestamp"
-                                ],
+                                ]
                         }
 
-                    # =================================================
-                    # PUBLISH data_raw.json
-                    # =================================================
+                    # -------------------------------------------------
+                    # PUBLISH
+                    # -------------------------------------------------
 
                     payload = {
+
                         "live_spot":
                             spot,
 
@@ -1428,7 +1102,7 @@ def start_backend_factory():
                             ),
 
                         "candles":
-                            cached_candles or [],
+                            cached_candles,
 
                         "last_update":
                             now_dt.strftime(
@@ -1442,22 +1116,7 @@ def start_backend_factory():
                             websocket_connected,
 
                         "option_contract":
-                            option_contract,
-
-                        "option_hint":
-                            option_hint_key,
-
-                        "candle_last_success":
-                            (
-                                last_candle_fetch.isoformat()
-                                if cached_candles
-                                else None
-                            ),
-
-                        "candle_retry_delay":
-                            candle_retry_delay,
-                        "candle_count":
-                            len(cached_candles or []),
+                            option_contract
                     }
 
                     atomic_write_json(
@@ -1472,20 +1131,12 @@ def start_backend_factory():
                         loop_err
                     )
 
-                # =================================================
-                # LIVE PUBLISH FREQUENCY
-                # =================================================
-
                 time.sleep(0.25)
-
-        # ========================================================
-        # CONNECTION FAILURE / RESTART
-        # ========================================================
 
         except Exception as conn_err:
 
             logging.error(
-                "🔴 Critical worker error: %s. "
+                "Critical worker error: %s. "
                 "Restarting in 10 sec...",
                 conn_err
             )
@@ -1500,10 +1151,6 @@ def start_backend_factory():
 
             time.sleep(10)
 
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
 
 if __name__ == "__main__":
     start_backend_factory()
