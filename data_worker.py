@@ -112,7 +112,44 @@ def atomic_write_json(path, payload):
         tmp,
         path
     )
+# DEBUG: show latest candle volumes
+try:
+    if cached_candles:
+        last_22 = cached_candles[-22:]
 
+        volumes = [
+            float(c[5])
+            for c in last_22
+            if len(c) >= 6 and c[5] is not None
+        ]
+
+        logging.info(
+            "📊 VOLUME DEBUG | Last22=%s",
+            volumes
+        )
+
+        if len(volumes) >= 2:
+            avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
+            current_vol = volumes[-1]
+
+            ratio = (
+                current_vol / avg_vol
+                if avg_vol > 0
+                else 0
+            )
+
+            logging.info(
+                "📊 VOLUME DEBUG | Current=%.0f | Avg=%.0f | Ratio=%.2fx",
+                current_vol,
+                avg_vol,
+                ratio
+            )
+
+except Exception as debug_err:
+    logging.warning(
+        "Volume debug error: %s",
+        debug_err
+    )
 
 # ============================================================
 # EXPIRY EXTRACTION
