@@ -165,7 +165,7 @@ def start_backend_factory():
             sws = SmartWebSocketV2(auth_token, AKEY, CID, feed_token)
 
             def on_open(wsapp):
-                logging.info("SmartWebSocketV2 connected")
+                logging.info("🟢 SmartWebSocketV2 CONNECTED")
                 try:
                     sws.subscribe("nifty-algo", 1, [{"exchangeType": 1, "tokens": [str(NIFTY_SPOT_TOKEN)]}])
                     if option_contract:
@@ -187,16 +187,18 @@ def start_backend_factory():
                     with tick_lock:
                         if token == str(NIFTY_SPOT_TOKEN):
                             ticks["nifty"] = {"ltp": price, "timestamp": ts.isoformat()}
+                            logging.info("🟢 NIFTY TICK: %.2f", price)
                         elif option_contract and token == str(option_contract["symboltoken"]):
                             ticks["option"] = {"ltp": price, "timestamp": ts.isoformat()}
+                            logging.info("🟢 OPTION TICK %s: %.2f", option_contract["tradingsymbol"], price)
                 except Exception as exc:
                     logging.debug("Tick parse error: %s", exc)
 
             def on_error(wsapp, error):
-                logging.error("SmartWebSocketV2 error: %s", error)
+                logging.error("🔴 SmartWebSocketV2 ERROR: %s", error)
 
             def on_close(wsapp):
-                logging.warning("SmartWebSocketV2 closed")
+                logging.warning("🟠 SmartWebSocketV2 CLOSED")
 
             sws.on_open = on_open
             sws.on_data = on_data
