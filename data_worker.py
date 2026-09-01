@@ -1,35 +1,31 @@
+# ============================================================
 # data_worker.py
 #
-# ============================================================
-# ANGEL ONE DATA WORKER
-# ============================================================
+# Angel One ONLY data worker
 #
-# ONLY component that talks to Angel One.
+# DATA SOURCES
+# ------------------------------------------------------------
+# NIFTY SPOT
+#   -> WebSocket live LTP
+#   -> REST historical OHLC
 #
-# WebSocket:
-#   - NIFTY live LTP
-#   - selected option live LTP
+# NIFTY FUTURES
+#   -> REST historical volume
 #
-# REST:
-#   - NIFTY SPOT historical 5-min candles
-#   - NIFTY FUTURES historical 5-min candles
-#   - option contract resolution
-#   - NIFTY futures contract resolution
+# COMBINED CANDLES
+#   -> SPOT OHLC
+#   -> FUTURES VOLUME
 #
-# IMPORTANT:
-#   Spot candles provide:
-#       OPEN / HIGH / LOW / CLOSE
-#
-#   NIFTY Futures candles provide:
-#       VOLUME
-#
-#   data_raw.json "candles" therefore contains:
-#       [date, spot_open, spot_high, spot_low,
-#        spot_close, FUTURES_VOLUME]
-#
-# This allows existing indicator_calc.py to continue working
-# without modification.
-#
+# IMPORTANT
+# ------------------------------------------------------------
+# 1. No REST LTP polling.
+# 2. NIFTY live LTP comes only from WebSocket.
+# 3. Futures contract is resolved ONLY ONCE.
+# 4. Option contract is resolved ONLY when strike/type changes.
+# 5. Failed option resolution has cooldown.
+# 6. Spot candle API failure NEVER clears old candles.
+# 7. Futures volume is used as the volume source.
+# 8. data_raw.json contains diagnostic volume information.
 # ============================================================
 
 import json
@@ -38,6 +34,7 @@ import os
 import re
 import threading
 import time
+
 from datetime import datetime, timedelta, timezone
 
 import pyotp
@@ -63,19 +60,12 @@ PIN = os.getenv("ANGEL_PIN")
 TKEY = os.getenv("ANGEL_TOTP_SECRET")
 
 
-# ============================================================
-# NIFTY SPOT
-# ============================================================
-
+# NSE NIFTY SPOT
 NIFTY_SPOT_TOKEN = os.getenv(
     "NIFTY_SPOT_TOKEN",
     "99926000"
 )
 
-
-# ============================================================
-# TIMEZONE
-# ============================================================
 
 IST = timezone(
     timedelta(
@@ -84,6 +74,31 @@ IST = timezone(
     )
 )
 
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+# Historical candles
+SPOT_FETCH_INTERVAL = 300       # 5 minutes
+FUTURES_FETCH_INTERVAL = 60     # 1 minute
+
+# Retry after REST failure
+REST_RETRY_SECONDS = 60
+
+# Option resolution retry
+OPTION_RETRY_SECONDS = 60
+
+# Historical lookback
+HISTORY_DAYS = 2
+
+# Minimum candles
+MIN_CANDLES = 22
+
+
+# ============================================================
+# TIME
+# ============================================================
 
 def now_ist():
     return datetime.now(IST)
@@ -97,10 +112,7 @@ def atomic_write_json(path, payload):
 
     tmp = f"{path}.tmp"
 
-    with open(
-        tmp,
-        "w"
-    ) as f:
+    with open(tmp, "w") as f:
 
         json.dump(
             payload,
@@ -108,51 +120,11 @@ def atomic_write_json(path, payload):
             separators=(",", ":")
         )
 
-    os.replace(
-        tmp,
-        path
-    )
-# DEBUG: show latest candle volumes
-try:
-    if cached_candles:
-        last_22 = cached_candles[-22:]
+    os.replace(tmp, path)
 
-        volumes = [
-            float(c[5])
-            for c in last_22
-            if len(c) >= 6 and c[5] is not None
-        ]
-
-        logging.info(
-            "📊 VOLUME DEBUG | Last22=%s",
-            volumes
-        )
-
-        if len(volumes) >= 2:
-            avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
-            current_vol = volumes[-1]
-
-            ratio = (
-                current_vol / avg_vol
-                if avg_vol > 0
-                else 0
-            )
-
-            logging.info(
-                "📊 VOLUME DEBUG | Current=%.0f | Avg=%.0f | Ratio=%.2fx",
-                current_vol,
-                avg_vol,
-                ratio
-            )
-
-except Exception as debug_err:
-    logging.warning(
-        "Volume debug error: %s",
-        debug_err
-    )
 
 # ============================================================
-# EXPIRY EXTRACTION
+# EXPIRY
 # ============================================================
 
 def extract_expiry(item):
@@ -264,7 +236,7 @@ def option_type(item):
 
 
 # ============================================================
-# STRIKE VALUE
+# STRIKE
 # ============================================================
 
 def strike_value(item):
@@ -281,6 +253,7 @@ def strike_value(item):
                 item.get(key)
             )
 
+            # Angel sometimes gives strike * 100
             if value > 100000:
                 value /= 100.0
 
@@ -326,68 +299,7 @@ def strike_value(item):
 
 
 # ============================================================
-# IS NIFTY FUTURE
-# ============================================================
-
-def is_nifty_future(item):
-
-    symbol = str(
-        item.get(
-            "tradingsymbol",
-            ""
-        )
-    ).upper()
-
-    name = str(
-        item.get(
-            "name",
-            ""
-        )
-    ).upper()
-
-    instrument_type = str(
-        item.get(
-            "instrumenttype",
-            ""
-        )
-    ).upper()
-
-    exch_seg = str(
-        item.get(
-            "exch_seg",
-            ""
-        )
-    ).upper()
-
-    # Main checks
-    if exch_seg and exch_seg != "NFO":
-        return False
-
-    if instrument_type in (
-        "FUTIDX",
-        "FUTSTK"
-    ):
-
-        if (
-            name == "NIFTY"
-            or symbol.startswith("NIFTY")
-        ):
-
-            return True
-
-    # Fallback
-    if (
-        symbol.startswith("NIFTY")
-        and symbol.endswith("FUT")
-    ):
-
-        return True
-
-    return False
-
-
-# ============================================================
-# RESOLVE NIFTY FUTURES
+# FIND NIFTY FUTURES
 # ============================================================
 
 def resolve_nifty_future(
@@ -398,7 +310,7 @@ def resolve_nifty_future(
     try:
 
         logging.info(
-            "🔎 Resolving current NIFTY Futures contract..."
+            "Resolving NIFTY FUTURES contract..."
         )
 
         response = api.searchScrip(
@@ -409,7 +321,7 @@ def resolve_nifty_future(
         if not response:
 
             logging.warning(
-                "NIFTY futures search returned empty response"
+                "Futures search returned empty response"
             )
 
             return None
@@ -417,7 +329,7 @@ def resolve_nifty_future(
         if not response.get("status"):
 
             logging.warning(
-                "NIFTY futures search unsuccessful: %s",
+                "Futures search unsuccessful: %s",
                 response
             )
 
@@ -427,19 +339,29 @@ def resolve_nifty_future(
             "data"
         ) or []
 
-        if not items:
-
-            logging.warning(
-                "NIFTY futures search returned no contracts"
-            )
-
-            return None
-
         candidates = []
 
         for item in items:
 
-            if not is_nifty_future(item):
+            symbol = str(
+                item.get(
+                    "tradingsymbol",
+                    ""
+                )
+            ).upper()
+
+            # Only NIFTY FUT
+            if not symbol.startswith("NIFTY"):
+                continue
+
+            if not symbol.endswith("FUT"):
+                continue
+
+            # Avoid NIFTYNXT50 / FPI etc.
+            if symbol.startswith("NIFTYNXT50"):
+                continue
+
+            if symbol.startswith("NIFTYFPI"):
                 continue
 
             expiry = extract_expiry(
@@ -449,7 +371,6 @@ def resolve_nifty_future(
             if expiry is None:
                 continue
 
-            # Ignore expired contracts
             if expiry < today:
                 continue
 
@@ -458,18 +379,13 @@ def resolve_nifty_future(
                 or item.get("token")
             )
 
-            symbol = (
-                item.get("tradingsymbol")
-                or item.get("symbol")
-            )
-
-            if not token or not symbol:
+            if not token:
                 continue
 
             candidates.append(
                 (
                     expiry,
-                    str(symbol),
+                    symbol,
                     str(token)
                 )
             )
@@ -477,12 +393,11 @@ def resolve_nifty_future(
         if not candidates:
 
             logging.warning(
-                "No active NIFTY Futures contract found"
+                "No valid NIFTY FUTURES contract found"
             )
 
             return None
 
-        # Nearest expiry
         candidates.sort(
             key=lambda x: (
                 x[0],
@@ -490,9 +405,7 @@ def resolve_nifty_future(
             )
         )
 
-        expiry, symbol, token = (
-            candidates[0]
-        )
+        expiry, symbol, token = candidates[0]
 
         contract = {
 
@@ -506,10 +419,7 @@ def resolve_nifty_future(
                 token,
 
             "expiry":
-                expiry.isoformat(),
-
-            "instrument":
-                "NIFTY_FUTURES"
+                expiry.isoformat()
         }
 
         logging.info(
@@ -524,7 +434,7 @@ def resolve_nifty_future(
     except Exception as exc:
 
         logging.error(
-            "NIFTY futures resolution error: %s",
+            "Futures resolution error: %s",
             exc
         )
 
@@ -532,7 +442,7 @@ def resolve_nifty_future(
 
 
 # ============================================================
-# RESOLVE OPTION
+# OPTION RESOLUTION
 # ============================================================
 
 def resolve_option(
@@ -566,8 +476,7 @@ def resolve_option(
         if not response.get("status"):
 
             logging.warning(
-                "searchScrip unsuccessful: %s",
-                response
+                "searchScrip unsuccessful"
             )
 
             return None
@@ -576,17 +485,26 @@ def resolve_option(
             "data"
         ) or []
 
-        if not items:
-
-            logging.warning(
-                "searchScrip returned no contracts"
-            )
-
-            return None
-
         candidates = []
 
         for item in items:
+
+            symbol = str(
+                item.get(
+                    "tradingsymbol",
+                    ""
+                )
+            ).upper()
+
+            # Only NIFTY options
+            if not symbol.startswith("NIFTY"):
+                continue
+
+            if symbol.startswith("NIFTYNXT50"):
+                continue
+
+            if symbol.startswith("NIFTYFPI"):
+                continue
 
             if option_type(item) != opt_type:
                 continue
@@ -606,30 +524,28 @@ def resolve_option(
                 item
             )
 
-            if (
-                expiry is not None
-                and expiry < today
-            ):
+            if expiry is not None:
 
-                continue
+                if expiry < today:
+                    continue
 
             token = (
                 item.get("symboltoken")
                 or item.get("token")
             )
 
-            symbol = (
+            symbol_name = (
                 item.get("tradingsymbol")
                 or item.get("symbol")
             )
 
-            if not token or not symbol:
+            if not token or not symbol_name:
                 continue
 
             candidates.append(
                 (
                     expiry or today,
-                    str(symbol),
+                    str(symbol_name),
                     str(token)
                 )
             )
@@ -651,9 +567,7 @@ def resolve_option(
             )
         )
 
-        expiry, symbol, token = (
-            candidates[0]
-        )
+        expiry, symbol, token = candidates[0]
 
         contract = {
 
@@ -675,11 +589,11 @@ def resolve_option(
             "expiry":
                 expiry.isoformat()
                 if expiry
-                else None,
+                else None
         }
 
         logging.info(
-            "🟢 Option resolved: %s | token=%s | expiry=%s",
+            "🟢 OPTION resolved: %s | token=%s | expiry=%s",
             symbol,
             token,
             expiry
@@ -698,120 +612,99 @@ def resolve_option(
 
 
 # ============================================================
-# CANDLE KEY
+# NORMALIZE CANDLE
 # ============================================================
 
-def candle_key(value):
+def normalize_candle(row):
 
     try:
 
-        dt = datetime.fromisoformat(
-            str(value)
-        )
+        if not row or len(row) < 6:
+            return None
 
-        if dt.tzinfo is None:
+        return [
 
-            dt = dt.replace(
-                tzinfo=IST
-            )
+            str(row[0]),
 
-        dt = dt.astimezone(
-            IST
-        )
+            float(row[1]),
+            float(row[2]),
+            float(row[3]),
+            float(row[4]),
 
-        return dt.strftime(
-            "%Y-%m-%d %H:%M"
-        )
+            float(row[5])
+            if row[5] is not None
+            else 0.0
+        ]
 
     except Exception:
 
-        return str(value)
+        return None
 
 
 # ============================================================
 # MERGE SPOT OHLC + FUTURES VOLUME
 # ============================================================
 
-def merge_spot_and_futures(
+def merge_candles(
     spot_candles,
     futures_candles
 ):
 
     if not spot_candles:
-
         return []
 
-    futures_volume = {}
+    if not futures_candles:
+        return []
 
-    for row in futures_candles or []:
+    futures_map = {}
 
-        if len(row) < 6:
+    for row in futures_candles:
+
+        c = normalize_candle(row)
+
+        if not c:
             continue
 
-        try:
+        timestamp = str(c[0])
 
-            key = candle_key(
-                row[0]
-            )
+        futures_map[timestamp] = c[5]
 
-            volume = float(
-                row[5]
-            )
-
-            futures_volume[key] = volume
-
-        except Exception:
-
-            continue
-
-    merged = []
+    combined = []
 
     matched = 0
 
     for row in spot_candles:
 
-        if len(row) < 6:
+        c = normalize_candle(row)
+
+        if not c:
             continue
 
-        try:
+        timestamp = str(c[0])
 
-            key = candle_key(
-                row[0]
-            )
-
-            if key in futures_volume:
-
-                volume = futures_volume[key]
-                matched += 1
-
-            else:
-
-                # If futures volume is not available
-                # for this candle, preserve 0.
-                volume = 0.0
-
-            merged.append(
-                [
-                    row[0],
-                    row[1],
-                    row[2],
-                    row[3],
-                    row[4],
-                    volume
-                ]
-            )
-
-        except Exception:
-
+        if timestamp not in futures_map:
             continue
+
+        combined.append(
+            [
+                timestamp,
+                c[1],       # spot open
+                c[2],       # spot high
+                c[3],       # spot low
+                c[4],       # spot close
+                futures_map[timestamp]
+            ]
+        )
+
+        matched += 1
 
     logging.info(
         "🧩 Spot/Futures merge: %d/%d candles matched with Futures volume",
         matched,
-        len(merged)
+        len(spot_candles)
     )
 
-    return merged
+    return combined
 
 
 # ============================================================
@@ -847,8 +740,7 @@ def start_backend_factory():
 
                 raise RuntimeError(
                     "ANGEL_CLIENT_CODE/API_KEY/PIN/"
-                    "TOTP_SECRET environment variables "
-                    "are required"
+                    "TOTP_SECRET environment variables required"
                 )
 
             logging.info(
@@ -856,7 +748,7 @@ def start_backend_factory():
             )
 
             # ------------------------------------------------
-            # API
+            # LOGIN
             # ------------------------------------------------
 
             api = SmartConnect(
@@ -897,7 +789,7 @@ def start_backend_factory():
             if not feed_token:
 
                 raise RuntimeError(
-                    "Unable to obtain SmartAPI feed token"
+                    "Unable to obtain feed token"
                 )
 
             logging.info(
@@ -908,27 +800,25 @@ def start_backend_factory():
             # CANDLE CACHE
             # ------------------------------------------------
 
-            cached_candles = []
+            spot_candles_cache = []
 
-            last_candle_fetch = (
+            futures_candles_cache = []
+
+            combined_candles_cache = []
+
+            last_spot_fetch = (
                 datetime.min.replace(
                     tzinfo=IST
                 )
             )
 
-            candle_retry_after = (
+            last_futures_fetch = (
                 datetime.min.replace(
                     tzinfo=IST
                 )
             )
 
-            # ------------------------------------------------
-            # FUTURES STATE
-            # ------------------------------------------------
-
-            futures_contract = None
-
-            last_futures_resolve = (
+            spot_retry_after = (
                 datetime.min.replace(
                     tzinfo=IST
                 )
@@ -941,12 +831,24 @@ def start_backend_factory():
             )
 
             # ------------------------------------------------
+            # FUTURES CONTRACT
+            # ------------------------------------------------
+
+            futures_contract = None
+
+            # ------------------------------------------------
             # OPTION STATE
             # ------------------------------------------------
 
             option_contract = None
 
             option_hint_key = None
+
+            option_retry_after = (
+                datetime.min.replace(
+                    tzinfo=IST
+                )
+            )
 
             # ------------------------------------------------
             # TICKS
@@ -956,11 +858,9 @@ def start_backend_factory():
 
             ticks = {
 
-                "nifty":
-                    None,
+                "nifty": None,
 
-                "option":
-                    None
+                "option": None
             }
 
             # ------------------------------------------------
@@ -976,9 +876,9 @@ def start_backend_factory():
 
             websocket_connected = False
 
-            # ------------------------------------------------
-            # WEBSOCKET OPEN
-            # ------------------------------------------------
+            # =================================================
+            # ON OPEN
+            # =================================================
 
             def on_open(wsapp):
 
@@ -992,9 +892,9 @@ def start_backend_factory():
 
                 try:
 
-                    # ----------------------------------------
+                    # -----------------------------------------
                     # NIFTY SPOT
-                    # ----------------------------------------
+                    # -----------------------------------------
 
                     sws.subscribe(
                         "nifty-algo",
@@ -1002,7 +902,6 @@ def start_backend_factory():
                         [
                             {
                                 "exchangeType": 1,
-
                                 "tokens": [
                                     str(
                                         NIFTY_SPOT_TOKEN
@@ -1016,9 +915,9 @@ def start_backend_factory():
                         "🟢 NIFTY subscription active"
                     )
 
-                    # ----------------------------------------
+                    # -----------------------------------------
                     # OPTION
-                    # ----------------------------------------
+                    # -----------------------------------------
 
                     if option_contract:
 
@@ -1028,7 +927,6 @@ def start_backend_factory():
                             [
                                 {
                                     "exchangeType": 2,
-
                                     "tokens": [
                                         str(
                                             option_contract[
@@ -1047,9 +945,9 @@ def start_backend_factory():
                         exc
                     )
 
-            # ------------------------------------------------
-            # WEBSOCKET DATA
-            # ------------------------------------------------
+            # =================================================
+            # ON DATA
+            # =================================================
 
             def on_data(
                 wsapp,
@@ -1099,9 +997,7 @@ def start_backend_factory():
                                     / 1000.0,
                                     tz=timezone.utc
                                 )
-                                .astimezone(
-                                    IST
-                                )
+                                .astimezone(IST)
                             )
 
                         except Exception:
@@ -1115,7 +1011,7 @@ def start_backend_factory():
                     with tick_lock:
 
                         # ------------------------------------
-                        # NIFTY SPOT
+                        # NIFTY
                         # ------------------------------------
 
                         if (
@@ -1145,10 +1041,8 @@ def start_backend_factory():
 
                         elif (
                             option_contract
-                            and
-                            token
-                            ==
-                            str(
+                            and token
+                            == str(
                                 option_contract[
                                     "symboltoken"
                                 ]
@@ -1179,9 +1073,9 @@ def start_backend_factory():
                         exc
                     )
 
-            # ------------------------------------------------
-            # WEBSOCKET ERROR
-            # ------------------------------------------------
+            # =================================================
+            # ON ERROR
+            # =================================================
 
             def on_error(
                 wsapp,
@@ -1193,9 +1087,9 @@ def start_backend_factory():
                     error
                 )
 
-            # ------------------------------------------------
-            # WEBSOCKET CLOSE
-            # ------------------------------------------------
+            # =================================================
+            # ON CLOSE
+            # =================================================
 
             def on_close(wsapp):
 
@@ -1208,12 +1102,15 @@ def start_backend_factory():
                 )
 
             sws.on_open = on_open
+
             sws.on_data = on_data
+
             sws.on_error = on_error
+
             sws.on_close = on_close
 
             # ------------------------------------------------
-            # START WEBSOCKET
+            # START WS
             # ------------------------------------------------
 
             ws_thread = threading.Thread(
@@ -1235,470 +1132,451 @@ def start_backend_factory():
 
                 now_dt = now_ist()
 
-                try:
+                # ------------------------------------------------
+                # READ TICKS
+                # ------------------------------------------------
 
-                    # -----------------------------------------
-                    # READ TICKS
-                    # -----------------------------------------
+                with tick_lock:
 
-                    with tick_lock:
-
-                        nifty_tick = (
-                            dict(
-                                ticks["nifty"]
-                            )
-                            if ticks["nifty"]
-                            else None
+                    nifty_tick = (
+                        dict(
+                            ticks["nifty"]
                         )
-
-                        option_tick = (
-                            dict(
-                                ticks["option"]
-                            )
-                            if ticks["option"]
-                            else None
-                        )
-
-                    # -----------------------------------------
-                    # WAIT FOR NIFTY WEBSOCKET
-                    # -----------------------------------------
-
-                    if nifty_tick is None:
-
-                        time.sleep(
-                            0.5
-                        )
-
-                        continue
-
-                    spot = float(
-                        nifty_tick["ltp"]
+                        if ticks["nifty"]
+                        else None
                     )
 
-                    # =================================================
-                    # RESOLVE NIFTY FUTURES
-                    # =================================================
-                    #
-                    # Resolve initially.
-                    # Re-check approximately every 30 minutes.
-                    #
-                    # This also handles expiry rollover.
-                    # =================================================
+                    option_tick = (
+                        dict(
+                            ticks["option"]
+                        )
+                        if ticks["option"]
+                        else None
+                    )
 
-                    futures_due = (
+                # ------------------------------------------------
+                # WAIT NIFTY WS
+                # ------------------------------------------------
 
-                        futures_contract is None
+                if nifty_tick is None:
 
-                        or (
+                    time.sleep(0.5)
 
-                            (
-                                now_dt
-                                -
-                                last_futures_resolve
-                            ).total_seconds()
-                            >= 1800
+                    continue
+
+                spot = float(
+                    nifty_tick["ltp"]
+                )
+
+                # =================================================
+                # RESOLVE FUTURES ONLY ONCE
+                # =================================================
+
+                if futures_contract is None:
+
+                    futures_contract = (
+                        resolve_nifty_future(
+                            api,
+                            now_dt.date()
                         )
                     )
 
-                    futures_retry_allowed = (
+                    if futures_contract:
 
+                        logging.info(
+                            "🟢 Futures volume source active: %s",
+                            futures_contract[
+                                "tradingsymbol"
+                            ]
+                        )
+
+                    else:
+
+                        logging.warning(
+                            "⚠️ Futures contract not resolved yet"
+                        )
+
+                # =================================================
+                # DATE RANGE
+                # =================================================
+
+                from_d = (
+                    now_dt
+                    - timedelta(
+                        days=HISTORY_DAYS
+                    )
+                ).strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+
+                to_d = (
+                    now_dt.strftime(
+                        "%Y-%m-%d %H:%M"
+                    )
+                )
+
+                # =================================================
+                # SPOT CANDLE FETCH
+                #
+                # ONLY EVERY 5 MINUTES
+                #
+                # If rate-limited:
+                # KEEP OLD CACHE
+                # =================================================
+
+                spot_due = (
+
+                    not spot_candles_cache
+
+                    or (
                         now_dt
-                        >= futures_retry_after
-                    )
+                        - last_spot_fetch
+                    ).total_seconds()
+                    >= SPOT_FETCH_INTERVAL
+                )
 
-                    if (
-                        futures_due
-                        and
-                        futures_retry_allowed
-                    ):
+                spot_retry_allowed = (
+                    now_dt
+                    >= spot_retry_after
+                )
 
-                        resolved_future = (
-                            resolve_nifty_future(
-                                api,
-                                now_dt.date()
-                            )
+                if (
+                    spot_due
+                    and spot_retry_allowed
+                ):
+
+                    try:
+
+                        logging.info(
+                            "Fetching NIFTY SPOT 5-min candles..."
                         )
 
-                        if resolved_future:
+                        res = api.getCandleData(
+                            {
+                                "exchange":
+                                    "NSE",
 
-                            old_future_symbol = (
+                                "symboltoken":
+                                    NIFTY_SPOT_TOKEN,
 
-                                futures_contract[
-                                    "tradingsymbol"
-                                ]
-                                if futures_contract
-                                else None
-                            )
+                                "interval":
+                                    "FIVE_MINUTE",
 
-                            futures_contract = (
-                                resolved_future
-                            )
+                                "fromdate":
+                                    from_d,
 
-                            last_futures_resolve = (
-                                now_dt
-                            )
-
-                            futures_retry_after = (
-                                now_dt
-                            )
-
-                            if (
-                                old_future_symbol
-                                !=
-                                futures_contract[
-                                    "tradingsymbol"
-                                ]
-                            ):
-
-                                logging.info(
-                                    "🔄 Active Futures changed: %s",
-                                    futures_contract[
-                                        "tradingsymbol"
-                                    ]
-                                )
-
-                        else:
-
-                            futures_retry_after = (
-                                now_dt
-                                +
-                                timedelta(
-                                    seconds=60
-                                )
-                            )
-
-                    # =================================================
-                    # HISTORICAL CANDLES
-                    # =================================================
-
-                    candle_due = (
-
-                        not cached_candles
-
-                        or (
-
-                            (
-                                now_dt
-                                -
-                                last_candle_fetch
-                            ).total_seconds()
-                            >= 60
-                        )
-                    )
-
-                    retry_allowed = (
-
-                        now_dt
-                        >= candle_retry_after
-                    )
-
-                    if (
-                        candle_due
-                        and
-                        retry_allowed
-                    ):
-
-                        # ---------------------------------------------
-                        # 2 DAYS WINDOW
-                        # ---------------------------------------------
-
-                        from_d = (
-
-                            now_dt
-                            -
-                            timedelta(
-                                days=2
-                            )
-                        ).strftime(
-                            "%Y-%m-%d %H:%M"
+                                "todate":
+                                    to_d
+                            }
                         )
 
-                        to_d = (
-                            now_dt.strftime(
-                                "%Y-%m-%d %H:%M"
-                            )
-                        )
+                        if (
+                            res
+                            and res.get("status")
+                            and res.get("data")
+                        ):
 
-                        # ---------------------------------------------
-                        # SPOT CANDLES
-                        # ---------------------------------------------
-
-                        spot_candles = []
-
-                        try:
-
-                            logging.info(
-                                "Fetching NIFTY SPOT 5-min candles..."
+                            new_spot = (
+                                res["data"]
                             )
 
-                            spot_res = (
-                                api.getCandleData(
-                                    {
-                                        "exchange":
-                                            "NSE",
+                            if len(
+                                new_spot
+                            ) >= MIN_CANDLES:
 
-                                        "symboltoken":
-                                            NIFTY_SPOT_TOKEN,
-
-                                        "interval":
-                                            "FIVE_MINUTE",
-
-                                        "fromdate":
-                                            from_d,
-
-                                        "todate":
-                                            to_d,
-                                    }
-                                )
-                            )
-
-                            if (
-                                spot_res
-                                and
-                                spot_res.get(
-                                    "status"
-                                )
-                                and
-                                spot_res.get(
-                                    "data"
-                                )
-                            ):
-
-                                spot_candles = (
-                                    spot_res["data"]
+                                spot_candles_cache = (
+                                    new_spot
                                 )
 
                                 logging.info(
                                     "🟢 NIFTY SPOT candles: %d",
                                     len(
-                                        spot_candles
+                                        spot_candles_cache
                                     )
                                 )
 
                             else:
 
                                 logging.warning(
-                                    "NIFTY SPOT candle API returned no data"
-                                )
-
-                        except Exception as spot_err:
-
-                            logging.warning(
-                                "NIFTY SPOT candle API error: %s",
-                                spot_err
-                            )
-
-                        # ---------------------------------------------
-                        # FUTURES CANDLES
-                        # ---------------------------------------------
-
-                        futures_candles = []
-
-                        if futures_contract:
-
-                            try:
-
-                                logging.info(
-                                    "Fetching NIFTY FUTURES 5-min candles: %s",
-                                    futures_contract[
-                                        "tradingsymbol"
-                                    ]
-                                )
-
-                                future_res = (
-                                    api.getCandleData(
-                                        {
-                                            "exchange":
-                                                "NFO",
-
-                                            "symboltoken":
-                                                str(
-                                                    futures_contract[
-                                                        "symboltoken"
-                                                    ]
-                                                ),
-
-                                            "interval":
-                                                "FIVE_MINUTE",
-
-                                            "fromdate":
-                                                from_d,
-
-                                            "todate":
-                                                to_d,
-                                        }
-                                    )
-                                )
-
-                                if (
-                                    future_res
-                                    and
-                                    future_res.get(
-                                        "status"
-                                    )
-                                    and
-                                    future_res.get(
-                                        "data"
-                                    )
-                                ):
-
-                                    futures_candles = (
-                                        future_res["data"]
-                                    )
-
-                                    logging.info(
-                                        "🟢 NIFTY FUTURES candles: %d",
-                                        len(
-                                            futures_candles
-                                        )
-                                    )
-
-                                else:
-
-                                    logging.warning(
-                                        "NIFTY FUTURES candle API returned no data"
-                                    )
-
-                            except Exception as future_err:
-
-                                logging.warning(
-                                    "NIFTY FUTURES candle API error: %s",
-                                    future_err
-                                )
-
-                        # ---------------------------------------------
-                        # MERGE
-                        # ---------------------------------------------
-
-                        if (
-                            len(spot_candles)
-                            >=
-                            22
-                        ):
-
-                            merged_candles = (
-                                merge_spot_and_futures(
-                                    spot_candles,
-                                    futures_candles
-                                )
-                            )
-
-                            if (
-                                len(
-                                    merged_candles
-                                )
-                                >=
-                                22
-                            ):
-
-                                cached_candles = (
-                                    merged_candles
-                                )
-
-                                logging.info(
-                                    "🟢 Combined candles updated: %d | Volume source: NIFTY FUTURES",
-                                    len(
-                                        cached_candles
-                                    )
-                                )
-
-                            else:
-
-                                logging.warning(
-                                    "Merged candle count too low: %d",
-                                    len(
-                                        merged_candles
-                                    )
+                                    "Spot candle count too low: %d",
+                                    len(new_spot)
                                 )
 
                         else:
 
                             logging.warning(
-                                "Spot candle count too low: %d",
+                                "NIFTY SPOT candle API returned no data"
+                            )
+
+                        last_spot_fetch = now_dt
+
+                        spot_retry_after = (
+                            now_dt
+                            + timedelta(
+                                seconds=REST_RETRY_SECONDS
+                            )
+                        )
+
+                    except Exception as spot_err:
+
+                        logging.warning(
+                            "NIFTY SPOT candle API error: %s",
+                            spot_err
+                        )
+
+                        # IMPORTANT:
+                        # NEVER erase old spot cache
+
+                        last_spot_fetch = now_dt
+
+                        spot_retry_after = (
+                            now_dt
+                            + timedelta(
+                                seconds=REST_RETRY_SECONDS
+                            )
+                        )
+
+                # =================================================
+                # FUTURES CANDLE FETCH
+                #
+                # VOLUME SOURCE
+                # =================================================
+
+                futures_due = (
+
+                    futures_contract is not None
+
+                    and (
+                        not futures_candles_cache
+
+                        or (
+                            now_dt
+                            - last_futures_fetch
+                        ).total_seconds()
+                        >= FUTURES_FETCH_INTERVAL
+                    )
+                )
+
+                futures_retry_allowed = (
+                    now_dt
+                    >= futures_retry_after
+                )
+
+                if (
+                    futures_due
+                    and futures_retry_allowed
+                ):
+
+                    try:
+
+                        logging.info(
+                            "Fetching NIFTY FUTURES 5-min candles: %s",
+                            futures_contract[
+                                "tradingsymbol"
+                            ]
+                        )
+
+                        res = api.getCandleData(
+                            {
+                                "exchange":
+                                    "NFO",
+
+                                "symboltoken":
+                                    futures_contract[
+                                        "symboltoken"
+                                    ],
+
+                                "interval":
+                                    "FIVE_MINUTE",
+
+                                "fromdate":
+                                    from_d,
+
+                                "todate":
+                                    to_d
+                            }
+                        )
+
+                        if (
+                            res
+                            and res.get("status")
+                            and res.get("data")
+                        ):
+
+                            new_futures = (
+                                res["data"]
+                            )
+
+                            if len(
+                                new_futures
+                            ) >= MIN_CANDLES:
+
+                                futures_candles_cache = (
+                                    new_futures
+                                )
+
+                                logging.info(
+                                    "🟢 NIFTY FUTURES candles: %d",
+                                    len(
+                                        futures_candles_cache
+                                    )
+                                )
+
+                            else:
+
+                                logging.warning(
+                                    "Futures candle count too low: %d",
+                                    len(new_futures)
+                                )
+
+                        else:
+
+                            logging.warning(
+                                "NIFTY FUTURES candle API returned no data"
+                            )
+
+                        last_futures_fetch = now_dt
+
+                        futures_retry_after = (
+                            now_dt
+                            + timedelta(
+                                seconds=REST_RETRY_SECONDS
+                            )
+                        )
+
+                    except Exception as futures_err:
+
+                        logging.warning(
+                            "NIFTY FUTURES candle API error: %s",
+                            futures_err
+                        )
+
+                        # NEVER clear old futures cache
+
+                        last_futures_fetch = now_dt
+
+                        futures_retry_after = (
+                            now_dt
+                            + timedelta(
+                                seconds=REST_RETRY_SECONDS
+                            )
+                        )
+
+                # =================================================
+                # BUILD COMBINED CANDLES
+                # =================================================
+
+                if (
+                    len(spot_candles_cache)
+                    >= MIN_CANDLES
+
+                    and len(futures_candles_cache)
+                    >= MIN_CANDLES
+                ):
+
+                    try:
+
+                        merged = merge_candles(
+                            spot_candles_cache,
+                            futures_candles_cache
+                        )
+
+                        if len(merged) >= MIN_CANDLES:
+
+                            combined_candles_cache = (
+                                merged
+                            )
+
+                            logging.info(
+                                "🟢 Combined candles updated: %d | Volume source: NIFTY FUTURES",
                                 len(
-                                    spot_candles
+                                    combined_candles_cache
                                 )
                             )
 
-                        # ---------------------------------------------
-                        # DO NOT DELETE OLD CACHE
-                        # ---------------------------------------------
+                    except Exception as merge_err:
 
-                        last_candle_fetch = (
-                            now_dt
+                        logging.warning(
+                            "Candle merge error: %s",
+                            merge_err
                         )
 
-                        candle_retry_after = (
-                            now_dt
-                            +
-                            timedelta(
-                                seconds=30
+                # =================================================
+                # READ STRATEGY SIGNAL
+                # =================================================
+
+                desired_hint = None
+
+                if os.path.exists(
+                    "strategy_signal.json"
+                ):
+
+                    try:
+
+                        with open(
+                            "strategy_signal.json",
+                            "r"
+                        ) as sf:
+
+                            strat = json.load(
+                                sf
                             )
+
+                        otype = strat.get(
+                            "otype"
                         )
 
-                    # =================================================
-                    # READ STRATEGY SIGNAL
-                    # =================================================
+                        strike = strat.get(
+                            "option_strike"
+                        )
 
-                    desired_hint = None
+                        if (
+                            otype in (
+                                "CE",
+                                "PE"
+                            )
+                            and strike is not None
+                        ):
 
-                    if os.path.exists(
-                        "strategy_signal.json"
+                            desired_hint = (
+                                f"{int(float(strike))}:"
+                                f"{otype}"
+                            )
+
+                    except Exception as signal_err:
+
+                        logging.debug(
+                            "Strategy signal read error: %s",
+                            signal_err
+                        )
+
+                # =================================================
+                # OPTION RESOLUTION
+                #
+                # ONLY WHEN:
+                #     desired_hint changes
+                #
+                # OR previous resolution failed and cooldown passed
+                # =================================================
+
+                if desired_hint:
+
+                    should_resolve = False
+
+                    # New strike/type
+                    if desired_hint != option_hint_key:
+
+                        should_resolve = True
+
+                    # Same failed hint -> retry only after cooldown
+                    elif (
+                        option_contract is None
+                        and now_dt >= option_retry_after
                     ):
 
-                        try:
+                        should_resolve = True
 
-                            with open(
-                                "strategy_signal.json",
-                                "r"
-                            ) as sf:
-
-                                strat = json.load(
-                                    sf
-                                )
-
-                            otype = strat.get(
-                                "otype"
-                            )
-
-                            strike = strat.get(
-                                "option_strike"
-                            )
-
-                            if (
-                                otype
-                                in (
-                                    "CE",
-                                    "PE"
-                                )
-                                and
-                                strike
-                                is not None
-                            ):
-
-                                desired_hint = (
-                                    f"{int(float(strike))}:"
-                                    f"{otype}"
-                                )
-
-                        except Exception as signal_err:
-
-                            logging.debug(
-                                "Strategy signal read error: %s",
-                                signal_err
-                            )
-
-                    # =================================================
-                    # RESOLVE OPTION ONLY WHEN HINT CHANGES
-                    # =================================================
-
-                    if (
-                        desired_hint
-                        and
-                        desired_hint
-                        !=
-                        option_hint_key
-                    ):
+                    if should_resolve:
 
                         strike_s, opt_type = (
                             desired_hint.split(
@@ -1727,11 +1605,19 @@ def start_backend_factory():
                                 else None
                             )
 
-                            # -----------------------------------------
-                            # UNSUBSCRIBE OLD OPTION
-                            # -----------------------------------------
+                            # --------------------------------
+                            # Unsubscribe old option
+                            # --------------------------------
 
-                            if old_token:
+                            if (
+                                old_token
+                                and str(old_token)
+                                != str(
+                                    resolved[
+                                        "symboltoken"
+                                    ]
+                                )
+                            ):
 
                                 try:
 
@@ -1741,7 +1627,6 @@ def start_backend_factory():
                                         [
                                             {
                                                 "exchangeType": 2,
-
                                                 "tokens": [
                                                     str(
                                                         old_token
@@ -1751,16 +1636,9 @@ def start_backend_factory():
                                         ]
                                     )
 
-                                except Exception as unsub_err:
+                                except Exception:
 
-                                    logging.debug(
-                                        "Option unsubscribe warning: %s",
-                                        unsub_err
-                                    )
-
-                            # -----------------------------------------
-                            # NEW CONTRACT
-                            # -----------------------------------------
+                                    pass
 
                             option_contract = (
                                 resolved
@@ -1770,15 +1648,16 @@ def start_backend_factory():
                                 desired_hint
                             )
 
+                            option_retry_after = (
+                                now_dt
+                                + timedelta(
+                                    seconds=OPTION_RETRY_SECONDS
+                                )
+                            )
+
                             with tick_lock:
 
-                                ticks[
-                                    "option"
-                                ] = None
-
-                            # -----------------------------------------
-                            # SUBSCRIBE NEW OPTION
-                            # -----------------------------------------
+                                ticks["option"] = None
 
                             try:
 
@@ -1788,7 +1667,6 @@ def start_backend_factory():
                                     [
                                         {
                                             "exchangeType": 2,
-
                                             "tokens": [
                                                 str(
                                                     option_contract[
@@ -1814,121 +1692,203 @@ def start_backend_factory():
                                     sub_err
                                 )
 
-                    # =================================================
-                    # OPTION QUOTE
-                    # =================================================
+                        else:
 
-                    option_quote = None
+                            # IMPORTANT:
+                            # Keep desired hint but don't hammer searchScrip
 
-                    if (
-                        option_contract
-                        and
-                        option_tick
-                    ):
+                            option_retry_after = (
+                                now_dt
+                                + timedelta(
+                                    seconds=OPTION_RETRY_SECONDS
+                                )
+                            )
 
-                        option_quote = {
+                            logging.warning(
+                                "⚠️ Option resolution failed. "
+                                "Retry after %d sec.",
+                                OPTION_RETRY_SECONDS
+                            )
 
-                            **option_contract,
+                # =================================================
+                # OPTION QUOTE
+                # =================================================
 
-                            "ltp":
-                                float(
-                                    option_tick[
-                                        "ltp"
-                                    ]
-                                ),
+                option_quote = None
 
-                            "timestamp":
+                if (
+                    option_contract
+                    and option_tick
+                ):
+
+                    option_quote = {
+
+                        **option_contract,
+
+                        "ltp":
+                            float(
                                 option_tick[
-                                    "timestamp"
+                                    "ltp"
                                 ]
-                        }
+                            ),
 
-                    # =================================================
-                    # PUBLISH data_raw.json
-                    # =================================================
-
-                    payload = {
-
-                        # -----------------------------------------
-                        # LIVE SPOT
-                        # -----------------------------------------
-
-                        "live_spot":
-                            spot,
-
-                        "spot_timestamp":
-                            nifty_tick.get(
+                        "timestamp":
+                            option_tick[
                                 "timestamp"
-                            ),
-
-                        # -----------------------------------------
-                        # SPOT OHLC + FUTURES VOLUME
-                        # -----------------------------------------
-
-                        "candles":
-                            cached_candles,
-
-                        # -----------------------------------------
-                        # VOLUME SOURCE
-                        # -----------------------------------------
-
-                        "volume_source":
-                            (
-                                "NIFTY_FUTURES"
-                                if futures_contract
-                                else
-                                "UNAVAILABLE"
-                            ),
-
-                        # -----------------------------------------
-                        # FUTURES CONTRACT
-                        # -----------------------------------------
-
-                        "futures_contract":
-                            futures_contract,
-
-                        # -----------------------------------------
-                        # LAST UPDATE
-                        # -----------------------------------------
-
-                        "last_update":
-                            now_dt.strftime(
-                                "%H:%M:%S"
-                            ),
-
-                        # -----------------------------------------
-                        # OPTION
-                        # -----------------------------------------
-
-                        "option_quote":
-                            option_quote,
-
-                        "websocket_connected":
-                            websocket_connected,
-
-                        "option_contract":
-                            option_contract
+                            ]
                     }
 
-                    atomic_write_json(
-                        "data_raw.json",
-                        payload
-                    )
+                # =================================================
+                # VOLUME DIAGNOSTICS
+                # =================================================
 
-                except Exception as loop_err:
-
-                    logging.exception(
-                        "Worker loop error: %s",
-                        loop_err
-                    )
-
-                # -------------------------------------------------
-                # FAST LOOP
-                # -------------------------------------------------
-
-                time.sleep(
-                    0.25
+                volume_source = (
+                    "NIFTY FUTURES"
+                    if combined_candles_cache
+                    else "NONE"
                 )
+
+                current_volume = 0.0
+
+                volume_average = 0.0
+
+                volume_ratio = 0.0
+
+                volume_candle_time = None
+
+                if (
+                    len(
+                        combined_candles_cache
+                    ) >= 22
+                ):
+
+                    # Last completed candle = -2
+                    signal_index = -2
+
+                    current_volume = float(
+                        combined_candles_cache[
+                            signal_index
+                        ][5]
+                    )
+
+                    volume_candle_time = (
+                        combined_candles_cache[
+                            signal_index
+                        ][0]
+                    )
+
+                    # Previous 20 completed candles
+                    volume_window = [
+
+                        float(row[5])
+
+                        for row in
+                        combined_candles_cache[
+                            -22:-2
+                        ]
+
+                        if row[5] is not None
+                    ]
+
+                    if volume_window:
+
+                        volume_average = (
+                            sum(volume_window)
+                            / len(volume_window)
+                        )
+
+                    if volume_average > 0:
+
+                        volume_ratio = (
+                            current_volume
+                            / volume_average
+                        )
+
+                # =================================================
+                # PUBLISH
+                # =================================================
+
+                payload = {
+
+                    "live_spot":
+                        spot,
+
+                    "spot_timestamp":
+                        nifty_tick.get(
+                            "timestamp"
+                        ),
+
+                    "candles":
+                        combined_candles_cache,
+
+                    "last_update":
+                        now_dt.strftime(
+                            "%H:%M:%S"
+                        ),
+
+                    "option_quote":
+                        option_quote,
+
+                    "websocket_connected":
+                        websocket_connected,
+
+                    "option_contract":
+                        option_contract,
+
+                    # -----------------------------------------
+                    # FUTURES
+                    # -----------------------------------------
+
+                    "futures_contract":
+                        futures_contract,
+
+                    "volume_source":
+                        volume_source,
+
+                    "current_volume":
+                        current_volume,
+
+                    "volume_average":
+                        round(
+                            volume_average,
+                            2
+                        ),
+
+                    "volume_ratio":
+                        round(
+                            volume_ratio,
+                            2
+                        ),
+
+                    "volume_candle_time":
+                        volume_candle_time,
+
+                    # -----------------------------------------
+                    # CACHE STATUS
+                    # -----------------------------------------
+
+                    "spot_candles_count":
+                        len(
+                            spot_candles_cache
+                        ),
+
+                    "futures_candles_count":
+                        len(
+                            futures_candles_cache
+                        ),
+
+                    "combined_candles_count":
+                        len(
+                            combined_candles_cache
+                        )
+                }
+
+                atomic_write_json(
+                    "data_raw.json",
+                    payload
+                )
+
+                time.sleep(0.25)
 
         # =====================================================
         # CONNECTION FAILURE
@@ -1952,13 +1912,11 @@ def start_backend_factory():
 
                 pass
 
-            time.sleep(
-                10
-            )
+            time.sleep(10)
 
 
 # ============================================================
-# ENTRY POINT
+# ENTRY
 # ============================================================
 
 if __name__ == "__main__":
