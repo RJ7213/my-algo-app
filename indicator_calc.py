@@ -785,3 +785,4 @@ def start_indicator_engine():
 
 if __name__ == "__main__":
     start_indicator_engine()
+ 
