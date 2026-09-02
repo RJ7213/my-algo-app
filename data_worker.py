@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import threading
+import requests
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -61,6 +62,8 @@ NIFTY_SPOT_TOKEN = os.getenv(
 IST = timezone(timedelta(hours=5, minutes=30))
 
 CONTRACT_CACHE_FILE = "option_contract_cache.json"
+RAW_FILE = "data_raw.json"
+SCRIP_MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
 
 
 # ============================================================
@@ -375,7 +378,7 @@ def save_contract_cache(cache):
 
 def make_future_contract(item, today):
     symbol = str(item.get("tradingsymbol") or item.get("symbol") or "").upper().strip()
-    if not symbol.startswith("NIFTY") or not symbol.endswith("FUT"):
+    if (not symbol.startswith("NIFTY") or symbol.startswith("NIFTYNXT50") or symbol.startswith("NIFTYFPI") or not symbol.endswith("FUT")):
         return None
     expiry = extract_expiry(item)
     if expiry is not None and expiry < today:
@@ -396,128 +399,69 @@ def make_future_contract(item, today):
 # ============================================================
 
 def load_nifty_option_master(api, today):
-
-    """
-    IMPORTANT:
-    searchScrip() is called ONLY ONCE after login.
-
-    The returned NIFTY contracts are converted into an
-    in-memory lookup table.
-
-    Therefore changing:
-        24100 CE -> 24050 CE -> 24150 PE
-
-    does NOT call searchScrip() again.
-    """
-
-    try:
-
-        logging.info(
-            "📥 Loading NIFTY option master ONCE..."
-        )
-
-        response = api.searchScrip(
-            "NFO",
-            "NIFTY"
-        )
-
-        if not response:
-            logging.warning(
-                "searchScrip returned empty response"
-            )
-            return {}, None
-
-        if not response.get("status"):
-            logging.warning(
-                "searchScrip unsuccessful: %s",
-                response
-            )
-            return {}, None
-
-        items = response.get("data") or []
-
-        if not items:
-            logging.warning(
-                "searchScrip returned zero contracts"
-            )
-            return {}, None
-
+    """Load genuine NIFTY index option/future contracts once per process."""
+    def build_from_items(items):
         cache = {}
         nearest_future = None
-
         for item in items:
-
-            future_candidate = make_future_contract(item, today)
-            if future_candidate:
-                if (
-                    nearest_future is None
-                    or (future_candidate.get("expiry") or "9999-12-31")
-                    < (nearest_future.get("expiry") or "9999-12-31")
-                ):
-                    nearest_future = future_candidate
-
-            contract = make_contract(
-                item,
-                today
-            )
-
-            if not contract:
-                continue
-
-            key = (
-                f"{int(contract['strike'])}:"
-                f"{contract['option_type']}"
-            )
-
-            # Multiple expiries can exist.
-            # Keep the nearest expiry.
-            existing = cache.get(key)
-
-            if existing is None:
-
-                cache[key] = contract
-
-            else:
-
-                old_expiry = existing.get(
-                    "expiry"
-                )
-
-                new_expiry = contract.get(
-                    "expiry"
-                )
-
-                if old_expiry is None:
+            contract = make_contract(item, today)
+            if contract:
+                key = f"{int(contract['strike'])}:{contract['option_type']}"
+                existing = cache.get(key)
+                if existing is None or (contract.get('expiry') or '9999-12-31') < (existing.get('expiry') or '9999-12-31'):
                     cache[key] = contract
-
-                elif (
-                    new_expiry is not None
-                    and new_expiry < old_expiry
-                ):
-                    cache[key] = contract
-
-        logging.info(
-            "🟢 NIFTY option master loaded: %d contracts",
-            len(cache)
-        )
-        if nearest_future:
-            logging.info(
-                "🟢 NIFTY FUT selected from same master: %s | token=%s | expiry=%s",
-                nearest_future["tradingsymbol"],
-                nearest_future["symboltoken"],
-                nearest_future.get("expiry"),
-            )
-
+            future = make_future_contract(item, today)
+            if future:
+                if nearest_future is None or (future.get('expiry') or '9999-12-31') < (nearest_future.get('expiry') or '9999-12-31'):
+                    nearest_future = future
         return cache, nearest_future
 
+    # Preferred source: official Angel One public scrip master.
+    try:
+        logging.info("📥 Loading official NIFTY scrip master ONCE...")
+        response = requests.get(SCRIP_MASTER_URL, timeout=25)
+        response.raise_for_status()
+        items = response.json()
+        if not isinstance(items, list):
+            raise ValueError("Scrip master response is not a list")
+        nifty_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            exch = str(item.get("exch_seg", item.get("exchange", ""))).upper().strip()
+            name = str(item.get("name", "")).upper().strip()
+            symbol = str(item.get("symbol", item.get("tradingsymbol", ""))).upper().strip()
+            inst = str(item.get("instrumenttype", "")).upper().strip()
+            if exch != "NFO":
+                continue
+            if name != "NIFTY" and not symbol.startswith("NIFTY"):
+                continue
+            if symbol.startswith("NIFTYNXT50") or symbol.startswith("NIFTYFPI"):
+                continue
+            if symbol.endswith(("CE", "PE", "FUT")) or inst == "FUTIDX":
+                nifty_items.append(item)
+        cache, nearest_future = build_from_items(nifty_items)
+        if cache:
+            logging.info("🟢 NIFTY option master loaded: %d contracts", len(cache))
+            if nearest_future:
+                logging.info("🟢 NIFTY FUT selected: %s | token=%s | expiry=%s", nearest_future["tradingsymbol"], nearest_future["symboltoken"], nearest_future.get("expiry"))
+            return cache, nearest_future
+        logging.warning("⚠️ Official master had no usable NIFTY contracts")
     except Exception as exc:
+        logging.warning("⚠️ Official scrip master load failed: %s", exc)
 
-        logging.warning(
-            "⚠️ NIFTY option master load failed: %s",
-            exc
-        )
-
-        return {}, None
+    # One-time fallback only. Never use searchScrip for strike changes.
+    try:
+        logging.info("📥 Falling back to Angel searchScrip ONCE...")
+        response = api.searchScrip("NFO", "NIFTY")
+        if response and response.get("status"):
+            cache, nearest_future = build_from_items(response.get("data") or [])
+            if cache:
+                logging.info("🟢 NIFTY fallback master loaded: %d contracts", len(cache))
+                return cache, nearest_future
+    except Exception as exc:
+        logging.warning("⚠️ Angel searchScrip fallback failed: %s", exc)
+    return {}, None
 
 
 # ============================================================
@@ -599,7 +543,7 @@ def start_backend_factory():
             previous = load_json(RAW_FILE, {}) or {}
             previous["market_status"] = "CLOSED"
             previous["worker_status"] = "Market closed - last snapshot retained"
-            previous["last_update"] = now_ist().isoformat()
+            previous["market_closed_at"] = now_ist().isoformat()
             try:
                 atomic_write_json(RAW_FILE, previous)
             except Exception:
@@ -849,7 +793,7 @@ def start_backend_factory():
 
                         sws.subscribe(
                             "option-algo",
-                            1,
+                            3,
                             [
                                 {
                                     "exchangeType": 2,
@@ -951,8 +895,8 @@ def start_backend_factory():
                                     ts.isoformat(),
                             }
 
-                            logging.info(
-                                "🟢 NIFTY TICK: %.2f",
+                            logging.debug(
+                                "NIFTY TICK: %.2f",
                                 price
                             )
 
@@ -980,14 +924,14 @@ def start_backend_factory():
                             }
 
                             if volume_day is not None:
-                                logging.info(
-                                    "📊 NIFTY FUT TICK: %.2f | day_volume=%.0f",
+                                logging.debug(
+                                    "NIFTY FUT TICK: %.2f | day_volume=%.0f",
                                     price,
                                     volume_day,
                                 )
                             else:
-                                logging.info(
-                                    "📊 NIFTY FUT TICK: %.2f | volume field unavailable",
+                                logging.debug(
+                                    "NIFTY FUT TICK: %.2f | volume field unavailable",
                                     price,
                                 )
 
@@ -1007,12 +951,16 @@ def start_backend_factory():
 
                             ticks["option"] = {
                                 "ltp": price,
-                                "timestamp":
-                                    ts.isoformat(),
+                                "timestamp": ts.isoformat(),
+                                "volume_day": message.get("volume_trade_for_the_day"),
+                                "open_interest": message.get("open_interest"),
+                                "last_traded_quantity": message.get("last_traded_quantity"),
+                                "best_5_buy_data": message.get("best_5_buy_data"),
+                                "best_5_sell_data": message.get("best_5_sell_data"),
                             }
 
-                            logging.info(
-                                "🟢 OPTION TICK %s: %.2f",
+                            logging.debug(
+                                "OPTION TICK %s: %.2f",
                                 option_contract[
                                     "tradingsymbol"
                                 ],
@@ -1082,6 +1030,15 @@ def start_backend_factory():
             while True:
 
                 now_dt = now_ist()
+
+                if not market_is_open(now_dt):
+                    logging.info("⏹️ Market session ended at %s IST - stopping WebSocket", now_dt.strftime("%H:%M:%S"))
+                    try:
+                        if sws:
+                            sws.close_connection()
+                    except Exception:
+                        pass
+                    break
 
                 try:
 
@@ -1487,7 +1444,7 @@ def start_backend_factory():
 
                                     sws.subscribe(
                                         "option-algo",
-                                        1,
+                                        3,
                                         [
                                             {
                                                 "exchangeType": 2,
