@@ -296,7 +296,7 @@ def render_dashboard():
         reason = val(
             decision,
             "reason",
-            default=ind.get("algo_reason", default="Waiting for setup…"),
+            default=ind.get("algo_reason", "Waiting for setup…"),
         )
         st.markdown(
             f'<div class="tiny" style="padding:3px 2px 4px">{reason}</div>',
