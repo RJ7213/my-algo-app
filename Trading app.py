@@ -1,468 +1,447 @@
-# ============================================================
-# NIFTY PAPER TRADING PRO — LIGHTWEIGHT LIVE DASHBOARD
-# ============================================================
-# READ-ONLY: no strategy calculation, no BUY/SELL logic, no orders.
-# ============================================================
-
 import json
 import math
-import os
-from datetime import timedelta, timezone
+from datetime import datetime, timezone, timedelta
 
-import pandas as pd
 import streamlit as st
 
 st.set_page_config(
-    page_title="NIFTY Paper Trading Pro",
+    page_title="NIFTY Paper",
     page_icon="📈",
-    layout="wide",
+    layout="centered",
     initial_sidebar_state="collapsed",
 )
 
-# ------------------------------------------------------------
-# UI
-# ------------------------------------------------------------
+IST = timezone(timedelta(hours=5, minutes=30))
+
+FILES = {
+    "raw": "data_raw.json",
+    "ind": "processed_indicators.json",
+    "structure": "processed_market_structure.json",
+    "paper": "paper_engine_output.json",
+    "journal": "trade_history.json",
+}
+
+# ============================================================
+# COMPACT MOBILE-FIRST DASHBOARD
+# Read-only. No strategy calculations. No trading decisions.
+# Only reads engine JSON outputs.
+# ============================================================
+
 st.markdown(
     """
 <style>
-[data-testid="stAppViewContainer"] { background:#f4f6f9; }
-[data-testid="stHeader"] { background:rgba(244,246,249,.94); }
-.main .block-container { max-width:1500px; padding:.65rem .8rem 1.5rem; }
-#MainMenu, footer { visibility:hidden; }
+#MainMenu, footer, header {visibility:hidden;}
+[data-testid="stAppViewContainer"] {background:#070b12;}
+.main .block-container {max-width:560px; padding:.35rem .45rem 1rem;}
+[data-testid="stTabs"] button {font-size:12px; font-weight:800; padding:7px 3px;}
+[data-testid="stTabs"] [role="tablist"] {gap:1px;}
 
-.hero { background:linear-gradient(135deg,#111827,#273449); color:#fff;
-        border-radius:14px; padding:12px 15px; margin-bottom:9px; }
-.hero-title { font-size:22px; font-weight:850; }
-.hero-sub { font-size:10px; opacity:.72; margin-top:2px; }
-
-.kpi { background:#fff; border:1px solid #e2e8f0; border-radius:11px;
-       padding:8px 10px; min-height:68px; box-shadow:0 1px 5px rgba(15,23,42,.045); }
-.kpi-label { font-size:9px; color:#64748b; text-transform:uppercase; letter-spacing:.55px; }
-.kpi-value { font-size:20px; font-weight:850; color:#111827; margin-top:2px; white-space:nowrap; }
-.kpi-sub { font-size:9px; color:#94a3b8; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-
-.section { font-size:16px; font-weight:850; color:#111827; margin:12px 0 6px; }
-.card { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:11px 12px; }
-.trade-main { font-size:24px; font-weight:900; color:#111827; }
-.muted { color:#64748b; font-size:11px; }
-.good { color:#087443; font-weight:800; }
-.bad { color:#b42318; font-weight:800; }
-.warn { color:#9a6700; font-weight:800; }
-
-[data-testid="stTabs"] button { font-weight:850; font-size:13px; }
-[data-testid="stDataFrame"] { border-radius:9px; overflow:hidden; }
-
-@media (max-width:700px) {
-  .main .block-container { padding:.35rem .45rem 1rem; }
-  .hero-title { font-size:19px; }
-  .kpi { min-height:61px; padding:7px 8px; }
-  .kpi-value { font-size:17px; }
-  .section { font-size:15px; margin-top:10px; }
+.card {
+    background:#101722;
+    border:1px solid #202b3a;
+    border-radius:10px;
+    padding:7px 9px;
+    margin:2px 0;
+}
+.lbl {font-size:8px;color:#7f8da1;text-transform:uppercase;letter-spacing:.45px;}
+.val {font-size:16px;font-weight:800;color:#eef4fb;line-height:1.1;margin-top:2px;}
+.sub {font-size:8px;color:#748196;margin-top:2px;}
+.section {font-size:11px;font-weight:800;color:#dce5f0;margin:8px 2px 4px;}
+.status {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    background:#0e1621;
+    border:1px solid #202b3a;
+    border-radius:9px;
+    padding:6px 9px;
+    margin:2px 0;
+}
+.green {color:#5ee58b;}
+.red {color:#ff6f75;}
+.yellow {color:#f5cf5d;}
+.muted {color:#8290a4;}
+.big {font-size:22px;font-weight:900;line-height:1.05;}
+.tiny {font-size:8px;color:#748196;}
+.trade {
+    background:#111c2b;
+    border:1px solid #294568;
+    border-radius:10px;
+    padding:8px 9px;
+    margin:2px 0;
+}
+hr {margin:6px 0;border-color:#202b3a;}
+[data-testid="stVerticalBlock"] {gap:.15rem;}
+@media(max-width:600px){
+    .main .block-container{padding:.25rem .3rem .8rem;}
+    .val{font-size:15px;}
+    .big{font-size:20px;}
 }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-IST = timezone(timedelta(hours=5, minutes=30))
-FILES = {
-    "raw": "data_raw.json",
-    "ind": "processed_indicators.json",
-    "structure": "processed_market_structure.json",
-    "paper": "paper_engine_output.json",
-    "ledger": "trade_history.json",
-}
 
-
-def load_json(path):
+def read_json(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
-            value = json.load(f)
-        return value if isinstance(value, dict) else {}
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
-def safe_float(value, default=None):
-    try:
-        if value is None or value == "":
-            return default
-        x = float(value)
-        return x if math.isfinite(x) else default
-    except Exception:
-        return default
+def d(value):
+    return value if isinstance(value, dict) else {}
 
 
-def safe_int(value, default=0):
-    try:
-        return int(float(value))
-    except Exception:
-        return default
+def lst(value):
+    return value if isinstance(value, list) else []
 
 
-def fmt(value, decimals=2, fallback="—"):
-    x = safe_float(value)
-    return fallback if x is None else f"{x:,.{decimals}f}"
-
-
-def money(value):
-    x = safe_float(value)
-    return "—" if x is None else f"₹{x:,.2f}"
-
-
-def first(d, *keys, default=None):
-    if not isinstance(d, dict):
+def val(obj, *keys, default=None):
+    if not isinstance(obj, dict):
         return default
     for key in keys:
-        v = d.get(key)
-        if v is not None and v != "":
-            return v
+        if key in obj and obj[key] is not None:
+            return obj[key]
     return default
 
 
-def dct(v):
-    return v if isinstance(v, dict) else {}
+def number(value, decimals=2, fallback="—"):
+    try:
+        x = float(value)
+        if not math.isfinite(x):
+            return fallback
+        return f"{x:,.{decimals}f}"
+    except (TypeError, ValueError):
+        return fallback
 
 
-def lst(v):
-    return v if isinstance(v, list) else []
+def money(value):
+    try:
+        x = float(value)
+        if not math.isfinite(x):
+            return "—"
+        return f"₹{x:,.2f}"
+    except (TypeError, ValueError):
+        return "—"
 
 
-def kpi(label, value, sub=""):
+def percent(value):
+    try:
+        return f"{float(value):.1f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def safe_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def card(label, value, sub=""):
     st.markdown(
-        f'<div class="kpi"><div class="kpi-label">{label}</div>'
-        f'<div class="kpi-value">{value}</div><div class="kpi-sub">{sub}</div></div>',
+        f'<div class="card"><div class="lbl">{label}</div>'
+        f'<div class="val">{value}</div><div class="sub">{sub}</div></div>',
         unsafe_allow_html=True,
     )
 
 
-def section(title):
-    st.markdown(f'<div class="section">{title}</div>', unsafe_allow_html=True)
+def gate(name, status, detail=""):
+    text = str(status if status is not None else "—").upper()
+    if text in ("PASS", "TRUE", "YES", "OK", "READY"):
+        cls = "green"
+    elif text in ("FAIL", "FALSE", "NO", "ERROR"):
+        cls = "red"
+    else:
+        cls = "yellow"
+
+    st.markdown(
+        f'<div class="status"><span><b>{name}</b><br>'
+        f'<span class="tiny">{detail}</span></span>'
+        f'<b class="{cls}">{text}</b></div>',
+        unsafe_allow_html=True,
+    )
 
 
-def state_text(value):
-    s = str(value if value is not None else "—").upper()
-    if s in {"PASS", "TRUE", "YES", "SUPPORTIVE", "BUY_BIASED", "BUY_DOMINANT", "LIVE", "READY", "OK"}:
-        return "🟢 " + s
-    if s in {"FAIL", "FALSE", "NO", "OPPOSING", "SELL_BIASED", "SELL_DOMINANT", "OFF", "WAIT"}:
-        return "🔴 " + s
-    return "🟡 " + s
+def load_all():
+    return {name: read_json(path) for name, path in FILES.items()}
+
+
+def get_active_trade(paper, journal):
+    active = paper.get("active_trade")
+    if isinstance(active, dict):
+        return active
+
+    for trade in lst(journal.get("trades")):
+        if isinstance(trade, dict) and str(trade.get("status", "")).upper() == "ACTIVE":
+            return trade
+    return None
 
 
 def render_dashboard():
-    # --------------------------------------------------------
-    # LOAD — inside refreshable fragment so live data updates
-    # without rebuilding the whole Streamlit page.
-    # --------------------------------------------------------
-    raw = load_json(FILES["raw"])
-    ind = load_json(FILES["ind"])
-    structure = load_json(FILES["structure"])
-    paper = load_json(FILES["paper"])
-    ledger = load_json(FILES["ledger"])
-    decision = dct(paper.get("decision"))
+    data = load_all()
+    raw = data["raw"]
+    ind = data["ind"]
+    ms = data["structure"]
+    paper = data["paper"]
+    journal = data["journal"]
 
-    spot = first(raw, "live_spot", default=first(paper, "live_spot"))
+    decision = d(paper.get("decision"))
+    active = get_active_trade(paper, journal)
+
+    spot = val(raw, "live_spot", default=val(paper, "live_spot"))
     connected = bool(raw.get("websocket_connected"))
-    market_status = str(first(raw, "market_status", default=first(paper, "market_status", default="UNKNOWN")))
-    last_update = first(raw, "last_update_ist", "last_update", default="—")
+    market = str(
+        val(raw, "market_status", default=val(paper, "market_status", default="UNKNOWN"))
+    ).upper()
 
-    active = dct(paper.get("active_trade"))
-    if not active:
-        active = next((dct(t) for t in lst(ledger.get("trades")) if str(t.get("status", "")).upper() == "ACTIVE"), {})
+    connection_class = "green" if connected else "red"
+    connection_text = "🟢 LIVE" if connected else "🔴 OFF"
 
-    setup = str(first(decision, "setup", default="NONE"))
-    trade_type = str(first(decision, "trade_type", default="NONE"))
-    strike = first(decision, "option_strike")
-    ready = bool(decision.get("ready"))
-
-    # --------------------------------------------------------
-    # HEADER
-    # --------------------------------------------------------
-    conn = "🟢 LIVE" if connected else "🔴 OFFLINE"
+    # ---------- HEADER ----------
     st.markdown(
-        f'<div class="hero"><div class="hero-title">📈 NIFTY PAPER TRADING PRO</div>'
-        f'<div class="hero-sub">{conn} · {market_status.upper()} · PAPER ONLY · Last tick: {last_update}</div></div>',
+        f'<div style="display:flex;justify-content:space-between;align-items:center;'
+        f'padding:1px 2px 5px">'
+        f'<div><b style="font-size:17px">📈 NIFTY PAPER</b>'
+        f'<div class="tiny">Paper only · Read-only dashboard</div></div>'
+        f'<div style="text-align:right"><b class="{connection_class}">{connection_text}</b>'
+        f'<br><span class="tiny">{market}</span></div></div>',
         unsafe_allow_html=True,
     )
 
-    # Always-visible market bar — the trader should see these first.
-    cols = st.columns(7)
-    market_items = [
-        ("NIFTY SPOT", fmt(spot), "live"),
-        ("DAY HIGH", fmt(first(raw, "live_day_high", default=ind.get("intraday_high"))), "session"),
-        ("DAY LOW", fmt(first(raw, "live_day_low", default=ind.get("intraday_low"))), "session"),
-        ("LIVE RSI", fmt(first(ind, "rsi", "live_rsi")), "live"),
-        ("EMA 9", fmt(first(ind, "ema9", "live_ema9")), "live"),
-        ("EMA 20", fmt(first(ind, "ema20", "live_ema20")), "live"),
-        ("LIVE VOL", f'{fmt(ind.get("live_volume_ratio"))}x', "ratio"),
-    ]
-    for col, item in zip(cols, market_items):
-        with col:
-            kpi(*item)
-
-    tab_market, tab_trade, tab_history = st.tabs([
-        "📊 LIVE MARKET",
-        "🎯 LIVE TRADE",
-        "📒 TRADE HISTORY",
-    ])
+    tabs = st.tabs(["📊 MARKET", "🎯 TRADE", "📒 HISTORY"])
 
     # ========================================================
-    # LIVE MARKET
+    # 1. MARKET — ONLY MARKET DATA
     # ========================================================
-    with tab_market:
-        section("Technical Snapshot")
-        cols = st.columns(6)
-        items = [
-            ("Signal RSI", fmt(ind.get("signal_rsi")), "closed candle"),
-            ("Signal EMA 9", fmt(ind.get("signal_ema9")), "closed candle"),
-            ("Signal EMA 20", fmt(ind.get("signal_ema20")), "closed candle"),
-            ("Live Volume", fmt(ind.get("live_volume"), 0), "current"),
-            ("Signal Volume", f'{fmt(ind.get("signal_volume_ratio"))}x', "ratio"),
-            ("Runway CE / PE", f'{fmt(ind.get("runway_ce"))} / {fmt(ind.get("runway_pe"))}', "points"),
-        ]
-        for col, item in zip(cols, items):
-            with col:
-                kpi(*item)
+    with tabs[0]:
+        c1, c2 = st.columns(2)
+        with c1:
+            card("NIFTY LIVE", number(spot, 2), "live spot")
+        with c2:
+            day_high = val(raw, "live_day_high", default=ind.get("intraday_high"))
+            day_low = val(raw, "live_day_low", default=ind.get("intraday_low"))
+            card("DAY HIGH / LOW", f"{number(day_high, 0)} / {number(day_low, 0)}", "session")
 
-        section("Level Engine")
-        levels = dct(ind.get("level_engine", ind.get("levels")))
-        support = dct(levels.get("nearest_support"))
-        resistance = dct(levels.get("nearest_resistance"))
-        cols = st.columns(6)
-        items = [
-            ("Support", fmt(support.get("level")), support.get("name", "—")),
-            ("Resistance", fmt(resistance.get("level")), resistance.get("name", "—")),
-            ("Support Strength", str(support.get("strength", "—")), "level"),
-            ("Resistance Strength", str(resistance.get("strength", "—")), "level"),
-            ("Morning Box", f'{fmt(levels.get("morning_box_high"))} / {fmt(levels.get("morning_box_low"))}', "H / L"),
-            ("Day H / L", f'{fmt(first(raw,"live_day_high",default=ind.get("intraday_high")))} / {fmt(first(raw,"live_day_low",default=ind.get("intraday_low")))}', "session"),
-        ]
-        for col, item in zip(cols, items):
-            with col:
-                kpi(*item)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            card("RSI", number(val(ind, "live_rsi", "rsi")))
+        with c2:
+            card("EMA 9", number(val(ind, "live_ema9", "ema9"), 0))
+        with c3:
+            card("EMA 20", number(val(ind, "live_ema20", "ema20"), 0))
 
-        section("OI & Order Flow")
-        order_flow = dct(structure.get("order_flow"))
-        options_flow = dct(order_flow.get("options"))
-        ce_flow = dct(options_flow.get("ce"))
-        pe_flow = dct(options_flow.get("pe"))
-        oi_sr = dct(structure.get("oi_support_resistance"))
-        cols = st.columns(6)
-        items = [
-            ("ATM", fmt(structure.get("atm"), 0), "structure"),
-            ("OI Support", fmt(oi_sr.get("support"), 0), "OI"),
-            ("OI Resistance", fmt(oi_sr.get("resistance"), 0), "OI"),
-            ("CE Flow", state_text(ce_flow.get("state")), "options"),
-            ("PE Flow", state_text(pe_flow.get("state")), "options"),
-            ("Bias", str(first(structure, "structure_bias", "bias", default="—")), "descriptive"),
-        ]
-        for col, item in zip(cols, items):
-            with col:
-                kpi(*item)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            card("VOLUME", f'{number(ind.get("live_volume_ratio"))}x')
+        with c2:
+            level_engine = d(ind.get("level_engine"))
+            support = d(level_engine.get("nearest_support"))
+            card("SUPPORT", number(support.get("level"), 0))
+        with c3:
+            resistance = d(level_engine.get("nearest_resistance"))
+            card("RESISTANCE", number(resistance.get("level"), 0))
 
-        section("NIFTY Futures")
-        fut = dct(raw.get("futures_tick"))
-        cols = st.columns(6)
-        items = [
-            ("Future LTP", fmt(fut.get("ltp")), "NIFTY FUT"),
-            ("Future Volume", fmt(fut.get("volume_day"), 0), "day"),
-            ("Future OI", fmt(fut.get("open_interest"), 0), "day"),
-            ("Buy Qty", fmt(fut.get("total_buy_quantity"), 0), "best-5"),
-            ("Sell Qty", fmt(fut.get("total_sell_quantity"), 0), "best-5"),
-            ("Live 5m Volume", fmt(raw.get("live_futures_volume_5m"), 0), "current"),
-        ]
-        for col, item in zip(cols, items):
-            with col:
-                kpi(*item)
+        st.markdown('<div class="section">CE / PE FLOW</div>', unsafe_allow_html=True)
+        order_flow = d(ms.get("order_flow"))
+        options_flow = d(order_flow.get("options"))
+        ce = d(options_flow.get("ce"))
+        pe = d(options_flow.get("pe"))
 
-        section("Live Option Chain")
-        chain = raw.get("option_chain")
-        if isinstance(chain, dict) and chain:
-            rows = []
-            for key, q0 in chain.items():
-                q = dct(q0)
-                rows.append({
-                    "STRIKE": safe_float(q.get("strike", key)),
-                    "TYPE": str(q.get("option_type", q.get("type", ""))),
-                    "LTP": safe_float(q.get("ltp")),
-                    "OI": safe_float(q.get("open_interest")),
-                    "OI CHG %": safe_float(q.get("oi_change_pct")),
-                    "VOLUME": safe_float(q.get("volume")),
-                    "BUY QTY": safe_float(q.get("total_buy_quantity")),
-                    "SELL QTY": safe_float(q.get("total_sell_quantity")),
-                })
-            df = pd.DataFrame(rows)
-            if not df.empty:
-                df = df.sort_values(["STRIKE", "TYPE"], na_position="last")
-                st.dataframe(df, width="stretch", hide_index=True, height=360)
-                st.caption(f'{len(df)} contracts · center {raw.get("option_chain_center", "—")} · 50-point strikes')
-        else:
-            st.info("Waiting for live option chain…")
+        c1, c2 = st.columns(2)
+        with c1:
+            gate("CE FLOW", ce.get("state"), "option flow")
+        with c2:
+            gate("PE FLOW", pe.get("state"), "option flow")
 
-        section("System Health")
-        cols = st.columns(5)
-        health = [
-            ("WebSocket", "LIVE" if connected else "OFF", "data worker"),
-            ("Candles", "OK" if raw.get("candle_last_success") else "WAIT", "historical cache"),
-            ("Indicators", "READY" if ind else "WAIT", "technical engine"),
-            ("Structure", "READY" if structure else "WAIT", "OI / flow engine"),
-            ("Paper Engine", "READY" if paper else "WAIT", "decision engine"),
-        ]
-        for col, item in zip(cols, health):
-            with col:
-                kpi(*item)
+        st.markdown('<div class="section">OI SUPPORT / RESISTANCE</div>', unsafe_allow_html=True)
+        oi_sr = d(ms.get("oi_support_resistance"))
+        c1, c2 = st.columns(2)
+        with c1:
+            card("OI SUPPORT", number(oi_sr.get("support"), 0))
+        with c2:
+            card("OI RESISTANCE", number(oi_sr.get("resistance"), 0))
+
+        st.markdown('<div class="section">FUTURES BUY / SELL</div>', unsafe_allow_html=True)
+        futures = d(raw.get("futures_tick"))
+        c1, c2 = st.columns(2)
+        with c1:
+            card("BUY QTY", number(futures.get("total_buy_quantity"), 0))
+        with c2:
+            card("SELL QTY", number(futures.get("total_sell_quantity"), 0))
 
     # ========================================================
-    # LIVE TRADE
+    # 2. TRADE — DECISION + GATES + ACCOUNT IN ONE PLACE
     # ========================================================
-    with tab_trade:
-        section("Current Paper Decision")
-        decision_label = f"{setup} · {trade_type}"
-        if strike is not None:
-            decision_label += f" · {fmt(strike, 0)}"
-        reason = first(decision, "reason", default="Waiting for all strategy gates…")
+    with tabs[1]:
+        setup = str(val(decision, "setup", default="NO SETUP"))
+        trade_type = str(val(decision, "trade_type", default="—"))
+        ready = bool(decision.get("ready"))
+        decision_class = "green" if ready else "yellow"
+        icon = "🟢" if ready else "🟡"
+        strike = number(decision.get("option_strike"), 0)
+
         st.markdown(
-            f'<div class="card"><div class="muted">PAPER ENGINE</div>'
-            f'<div class="trade-main">{"🟢" if ready else "🟡"} {decision_label}</div>'
-            f'<div class="muted" style="margin-top:4px">{reason}</div></div>',
+            f'<div class="trade"><div class="tiny">CURRENT DECISION</div>'
+            f'<div class="big {decision_class}">{icon} {setup}</div>'
+            f'<b>{trade_type}</b> · Strike {strike}</div>',
             unsafe_allow_html=True,
         )
 
-        section("Strategy Gates")
-        gates = dct(decision.get("gates", decision.get("gate_status")))
-        if gates:
-            gate_rows = []
-            for name, value in gates.items():
-                if isinstance(value, dict):
-                    status = first(value, "status", "state", "pass", default="—")
-                    detail = first(value, "reason", "message", default="")
-                else:
-                    status, detail = value, ""
-                gate_rows.append({
-                    "GATE": str(name).replace("_", " ").upper(),
-                    "STATUS": state_text(status),
-                    "DETAIL": str(detail),
-                })
-            st.dataframe(pd.DataFrame(gate_rows), width="stretch", hide_index=True)
+        reason = val(
+            decision,
+            "reason",
+            default=ind.get("algo_reason", default="Waiting for setup…"),
+        )
+        st.markdown(
+            f'<div class="tiny" style="padding:3px 2px 4px">{reason}</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown('<div class="section">STRATEGY GATES</div>', unsafe_allow_html=True)
+        gate(
+            "RSI",
+            val(decision, "rsi_pass", default=ind.get("signal_rsi_status")),
+            f'RSI {number(val(decision, "rsi", default=ind.get("signal_rsi")))}',
+        )
+        gate(
+            "EMA",
+            val(decision, "ema_pass", default=ind.get("signal_ema_status")),
+            f'9 {number(ind.get("signal_ema9"), 0)} · 20 {number(ind.get("signal_ema20"), 0)}',
+        )
+        gate(
+            "VOLUME",
+            val(decision, "volume_pass", default=ind.get("signal_vol_status")),
+            f'{number(ind.get("signal_volume_ratio"))}x · min 1.20x',
+        )
+        gate(
+            "RUNWAY",
+            val(decision, "runway_pass", default=ind.get("runway_status")),
+            f'{val(decision, "runway", default="—")} · min 15',
+        )
+        gate(
+            "CANDLE",
+            decision.get("candle_size_pass"),
+            f'{number(decision.get("candle_range"))} pts · 12–25',
+        )
+        gate(
+            "WICK",
+            decision.get("wick_pass"),
+            f'{number(decision.get("opposite_wick"))} pts · max 5% body',
+        )
+        gate(
+            "OI / FLOW",
+            decision.get("structure_pass"),
+            f'{val(decision, "oi_state", default="—")} / {val(decision, "flow_state", default="—")}',
+        )
+
+        # One single place for trade + wallet/account data.
+        st.markdown('<div class="section">TRADE & ACCOUNT</div>', unsafe_allow_html=True)
+
+        if isinstance(active, dict):
+            c1, c2 = st.columns(2)
+            with c1:
+                card("ACTIVE", active.get("option_symbol", "—"))
+            with c2:
+                card("QTY", number(active.get("qty"), 0))
+
+            c1, c2 = st.columns(2)
+            with c1:
+                card("ENTRY LTP", money(active.get("option_entry_ltp", active.get("entry"))))
+            with c2:
+                card("CURRENT LTP", money(active.get("current_option_ltp")))
+
+            card("RUNNING P&L", money(active.get("running_pnl")), "unrealized · wallet unchanged")
         else:
-            st.info("Gate details will appear when paper_engine publishes them.")
+            st.markdown(
+                '<div class="status"><span>No active paper trade</span>'
+                '<b class="muted">WAITING</b></div>',
+                unsafe_allow_html=True,
+            )
 
-        section("Active Paper Trade")
-        if active:
-            cols = st.columns(8)
-            items = [
-                ("Trade ID", str(active.get("trade_id", "—")), ""),
-                ("Type", str(active.get("trade_type", active.get("type", "—"))), ""),
-                ("Option", str(active.get("option_symbol", "—")), "contract"),
-                ("Qty", fmt(active.get("qty"), 0), "units"),
-                ("Entry LTP", money(active.get("option_entry_ltp", active.get("entry"))), "actual"),
-                ("Current LTP", money(active.get("current_option_ltp")), "actual"),
-                ("Running P&L", money(active.get("running_pnl")), "unrealized"),
-                ("SL / Target", f'{fmt(active.get("index_sl"))} / {fmt(active.get("index_target"))}', "index points"),
-            ]
-            for col, item in zip(cols, items):
-                with col:
-                    kpi(*item)
-        else:
-            st.info("No active paper trade — waiting for a valid completed-candle setup.")
-
-        section("Signal Candle")
-        candle = dct(first(decision, "signal_candle", "candle", default=ind.get("latest_completed_candle")))
-        cols = st.columns(7)
-        items = [
-            ("Candle Time", str(first(decision, "candle_time", default=candle.get("time", "—"))), "closed"),
-            ("Open", fmt(candle.get("open")), ""),
-            ("High", fmt(candle.get("high")), ""),
-            ("Low", fmt(candle.get("low")), ""),
-            ("Close", fmt(candle.get("close")), ""),
-            ("Range", fmt(first(decision, "candle_range", default=candle.get("range"))), "points"),
-            ("Runway", fmt(first(decision, "runway", default="—")), "points"),
-        ]
-        for col, item in zip(cols, items):
-            with col:
-                kpi(*item)
-
-        section("Paper Wallet & Performance")
-        cols = st.columns(7)
-        items = [
-            ("Starting", money(first(paper, "starting_balance", default=ledger.get("starting_balance"))), ""),
-            ("Wallet", money(first(paper, "wallet_balance", default=ledger.get("wallet_balance"))), "realized only"),
-            ("Running P&L", money(paper.get("running_pnl")), "unrealized"),
-            ("Realized P&L", money(paper.get("realized_pnl")), "closed trades"),
-            ("Total P&L", money(paper.get("total_pnl")), ""),
-            ("Closed", str(safe_int(first(paper, "closed_trades", default=ledger.get("closed_trades")))), "trades"),
-            ("Win Rate", f'{fmt(first(paper, "win_rate", default=ledger.get("win_rate")))}%', ""),
-        ]
-        for col, item in zip(cols, items):
-            with col:
-                kpi(*item)
+        c1, c2 = st.columns(2)
+        with c1:
+            card(
+                "WALLET",
+                money(val(paper, "wallet_balance", default=journal.get("wallet_balance"))),
+                "realized only",
+            )
+        with c2:
+            card(
+                "REALIZED P&L",
+                money(val(paper, "realized_pnl", default=journal.get("realized_pnl"))),
+                "closed trades",
+            )
 
     # ========================================================
-    # TRADE HISTORY
+    # 3. HISTORY — ONLY HISTORY
     # ========================================================
-    with tab_history:
-        section("Performance Summary")
-        cols = st.columns(6)
-        items = [
-            ("Total Trades", str(safe_int(first(paper, "trade_count", default=ledger.get("total_trades"))))),
-            ("Closed", str(safe_int(first(paper, "closed_trades", default=ledger.get("closed_trades"))))),
-            ("Target Hits", str(safe_int(first(paper, "target_hits", default=ledger.get("target_hits"))))),
-            ("SL Hits", str(safe_int(first(paper, "sl_hits", default=ledger.get("sl_hits"))))),
-            ("Realized P&L", money(paper.get("realized_pnl"))),
-            ("Wallet", money(paper.get("wallet_balance"))),
-        ]
-        for col, item in zip(cols, items):
-            with col:
-                kpi(item[0], item[1], "")
+    with tabs[2]:
+        trades = [t for t in lst(journal.get("trades")) if isinstance(t, dict)]
 
-        section("Trade Journal")
-        trades = [dct(t) for t in lst(ledger.get("trades"))]
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            card("TRADES", str(len(trades)))
+        with c2:
+            card("WIN RATE", percent(val(paper, "win_rate", default=journal.get("win_rate"))))
+        with c3:
+            card("CLOSED", str(val(paper, "closed_trades", default=journal.get("closed_trades", 0))))
+
+        total_realized = val(paper, "realized_pnl", default=journal.get("realized_pnl"))
+        card("TOTAL REALIZED P&L", money(total_realized))
+
+        st.markdown('<div class="section">RECENT TRADES</div>', unsafe_allow_html=True)
+
         if trades:
-            rows = []
-            for t in trades:
-                rows.append({
-                    "ID": t.get("trade_id"),
-                    "STATUS": t.get("status"),
-                    "ENTRY": t.get("entry_time"),
-                    "EXIT": t.get("exit_time"),
-                    "TYPE": t.get("trade_type", t.get("type")),
-                    "STRATEGY": t.get("strategy_used"),
-                    "SYMBOL": t.get("option_symbol"),
-                    "STRIKE": t.get("option_strike"),
-                    "ENTRY LTP": t.get("option_entry_ltp", t.get("entry")),
-                    "EXIT LTP": t.get("option_exit_ltp", t.get("exit_price")),
-                    "QTY": t.get("qty"),
-                    "SL": t.get("index_sl"),
-                    "TARGET": t.get("index_target"),
-                    "P&L": t.get("pnl_realized"),
-                    "EXIT REASON": t.get("exit_reason"),
-                    "RSI": t.get("signal_rsi"),
-                    "VOL": t.get("volume_ratio"),
-                    "OI": t.get("oi_state"),
-                    "FLOW": t.get("flow_state"),
-                })
-            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, height=480)
+            for trade in reversed(trades[-6:]):
+                status = str(trade.get("status", "—")).upper()
+                pnl_value = val(trade, "pnl_realized", default=trade.get("running_pnl"))
+                pnl = money(pnl_value)
+                numeric_pnl = safe_float(pnl_value)
+                result_class = "green" if numeric_pnl > 0 else ("red" if numeric_pnl < 0 else "yellow")
+
+                symbol = trade.get("option_symbol", "—")
+                trade_type = trade.get("trade_type", trade.get("type", "—"))
+                entry_time = trade.get("entry_time", trade.get("candle_time", "—"))
+
+                st.markdown(
+                    f'<div class="status"><span><b>{trade_type} · {symbol}</b><br>'
+                    f'<span class="tiny">{entry_time} · {status}</span></span>'
+                    f'<b class="{result_class}">{pnl}</b></div>',
+                    unsafe_allow_html=True,
+                )
         else:
-            st.info("No paper trades recorded yet.")
+            st.markdown(
+                '<div class="status"><span>No paper trades yet</span>'
+                '<b class="muted">—</b></div>',
+                unsafe_allow_html=True,
+            )
 
-        with st.expander("Diagnostics / Engine Files", expanded=False):
-            status = []
-            for _, path in FILES.items():
-                status.append({"FILE": path, "STATUS": "READY" if os.path.exists(path) else "WAITING"})
-            st.dataframe(pd.DataFrame(status), width="stretch", hide_index=True)
+        st.markdown(
+            f'<div class="tiny" style="text-align:center;margin-top:6px">'
+            f'Updated {datetime.now(IST).strftime("%H:%M:%S IST")}</div>',
+            unsafe_allow_html=True,
+        )
 
 
-# ------------------------------------------------------------
-# LIVE REFRESH
-# ------------------------------------------------------------
-# Streamlit fragments prevent the entire page from rebuilding every tick.
-# 2 seconds is fast enough for a paper-trading dashboard while remaining
-# light on the mobile browser. It does NOT create Angel One API calls.
-fragment = getattr(st, "fragment", None)
-if fragment is not None:
-    @fragment(run_every=2)
+# ============================================================
+# LIVE UPDATE
+# Only the dashboard fragment reruns every 2 seconds.
+# No st.rerun() and no time.sleep().
+# ============================================================
+
+if hasattr(st, "fragment"):
+
+    @st.fragment(run_every=2)
     def live_dashboard():
         render_dashboard()
+
     live_dashboard()
 else:
+    # Compatibility fallback for older Streamlit versions.
     render_dashboard()
