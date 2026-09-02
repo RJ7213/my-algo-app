@@ -1,31 +1,64 @@
 # indicator_calc.py
 # ============================================================
-# NIFTY LIVE INDICATOR + STRATEGY ENGINE
+# NIFTY TECHNICAL INDICATOR PROCESSOR - ARCHITECTURE V2
 # ============================================================
 #
-# Architecture:
-#   data_worker.py  -> data_raw.json
-#   indicator_calc.py reads ONLY data_raw.json
-#   indicator_calc.py publishes strategy_signal.json
-#   paper_engine.py reads data_raw.json + strategy_signal.json
+# data_worker.py
+#       |
+#       v
+# data_raw.json
+#       |
+#       v
+# indicator_calc.py
+#       |
+#       v
+# processed_indicators.json
 #
 # IMPORTANT:
-#   1. Indicators are LIVE and recalculate from the live NIFTY tick.
-#   2. Day High / Day Low come from live tick data supplied by worker.
-#   3. Live volume uses live NIFTY FUTURES 5-min volume when available.
-#   4. Strategy/entry confirmation uses the LAST COMPLETED 5-min candle.
-#   5. No entry is generated from the still-forming candle.
-#   6. Paper engine remains completely independent of Angel One.
+#   This file is ONLY a technical/data processor.
+#   It MUST NOT decide CALL/PUT, BUY/SELL, entry or exit.
+#   Strategy decisions belong exclusively to paper_engine.py.
+#
+# Preserved technical processing:
+#   - 5-minute completed/forming candle separation
+#   - LIVE spot price
+#   - LIVE RSI / EMA9 / EMA20
+#   - completed-candle RSI / EMA9 / EMA20
+#   - NIFTY futures volume alignment
+#   - LIVE futures 5-minute volume
+#   - volume average and volume ratio
+#   - Day High / Day Low
+#   - Previous Day High / Low
+#   - Morning Box High / Low (09:15-10:00)
+#   - psychological levels every 100 points
+#   - nearest support / resistance
+#   - major-level candidates for rejection/breakout processing
+#   - candle range / body / upper wick / lower wick
+#   - wick-to-body ratios
+#   - candle-size status (12-25 points)
+#   - opposite-wick information (5% body rule as DATA, not decision)
+#   - runway distances to Day High / Day Low
+#   - completed-candle context
+#   - live/forming-candle context
+#
+# NO strategy signal is generated here.
+# NO strategy_signal.json is written.
 # ============================================================
 
 import json
 import logging
+import math
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+
+# ============================================================
+# LOGGING / CONSTANTS
+# ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,219 +67,270 @@ logging.basicConfig(
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-
-# ============================================================
-# CONSTANTS
-# ============================================================
+RAW_FILE = "data_raw.json"
+OUTPUT_FILE = "processed_indicators.json"
 
 RSI_PERIOD = 14
+EMA_FAST = 9
+EMA_SLOW = 20
 VOLUME_AVG_PERIOD = 20
 VOLUME_PASS_RATIO = 1.20
 CANDLE_MIN = 12.0
 CANDLE_MAX = 25.0
 RUNWAY_MIN = 15.0
 WICK_BODY_MAX = 0.05
+PSYCHOLOGICAL_STEP = 100
+
+PUBLISH_INTERVAL_SEC = 0.50
+WAIT_INTERVAL_SEC = 0.50
+LOG_INTERVAL_SEC = 30.0
 
 
 # ============================================================
-# TIME / JSON
+# GENERIC HELPERS
 # ============================================================
 
-def now_ist():
+def now_ist() -> datetime:
     return datetime.now(IST)
 
 
-def atomic_write_json(path, payload):
+def safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    try:
+        if value is None or value == "":
+            return default
+        result = float(value)
+        if not math.isfinite(result):
+            return default
+        return result
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+    try:
+        if value is None or value == "":
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def json_safe(value: Any) -> Any:
+    """Convert pandas/numpy/non-finite values into JSON-safe values."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (float, int)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return value
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    return value
+
+
+def atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
     tmp = f"{path}.tmp"
-    with open(tmp, "w") as f:
-        json.dump(payload, f, separators=(",", ":"))
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(json_safe(payload), f, separators=(",", ":"), ensure_ascii=False)
     os.replace(tmp, path)
 
 
-def load_raw():
+def load_raw() -> Optional[Dict[str, Any]]:
     try:
-        with open("data_raw.json", "r") as f:
-            return json.load(f)
-    except Exception:
+        with open(RAW_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 
 
+def normalise_timestamp_series(series: pd.Series) -> pd.Series:
+    """Parse timestamps and normalize them to IST."""
+    dt = pd.to_datetime(series, errors="coerce", utc=True)
+    try:
+        return dt.dt.tz_convert(IST)
+    except Exception:
+        # Defensive fallback for unusual pandas input.
+        try:
+            naive = pd.to_datetime(series, errors="coerce")
+            if getattr(naive.dt, "tz", None) is None:
+                return naive.dt.tz_localize(IST)
+            return naive.dt.tz_convert(IST)
+        except Exception:
+            return pd.Series(pd.NaT, index=series.index)
+
+
+def to_float_list(values: pd.Series) -> List[float]:
+    return [float(x) for x in pd.to_numeric(values, errors="coerce").dropna().tolist()]
+
+
 # ============================================================
-# RSI
+# RSI / EMA
 # ============================================================
 
-def calculate_tv_rsi(series, period=RSI_PERIOD):
-    series = pd.to_numeric(series, errors="coerce").dropna()
-    if len(series) < period + 1:
+def calculate_tv_rsi(series: pd.Series, period: int = RSI_PERIOD) -> float:
+    """TradingView-style Wilder/RMA RSI approximation used by the old engine."""
+    values = pd.to_numeric(series, errors="coerce").dropna().astype(float)
+    if len(values) < period + 1:
         return 50.0
 
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0).astype(float)
-    loss = (-delta.where(delta < 0, 0.0)).astype(float)
+    delta = values.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta.where(delta < 0, 0.0))
 
     alpha = 1.0 / period
     avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
     avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
 
-    rs = avg_gain / avg_loss.replace(0, 0.00001)
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-    return float(rsi.iloc[-1])
+    # Explicit handling of no-loss/no-gain edge cases.
+    last_gain = float(avg_gain.iloc[-1])
+    last_loss = float(avg_loss.iloc[-1])
+    if last_loss == 0 and last_gain == 0:
+        return 50.0
+    if last_loss == 0:
+        return 100.0
+
+    rs = last_gain / last_loss
+    return float(100.0 - (100.0 / (1.0 + rs)))
+
+
+def ema(series: pd.Series, span: int) -> float:
+    values = pd.to_numeric(series, errors="coerce").dropna().astype(float)
+    if values.empty:
+        return 0.0
+    return float(values.ewm(span=span, adjust=False).mean().iloc[-1])
 
 
 # ============================================================
-# DATAFRAME PREPARATION
+# CANDLE DATAFRAME
 # ============================================================
 
-def build_spot_dataframe(candles):
+def build_candle_dataframe(candles: Any) -> pd.DataFrame:
     if not isinstance(candles, list) or not candles:
         return pd.DataFrame()
 
+    rows: List[List[Any]] = []
+    for row in candles:
+        if isinstance(row, (list, tuple)) and len(row) >= 6:
+            rows.append(list(row[:6]))
+        elif isinstance(row, dict):
+            rows.append([
+                row.get("date", row.get("datetime", row.get("timestamp"))),
+                row.get("open"),
+                row.get("high"),
+                row.get("low"),
+                row.get("close"),
+                row.get("volume", 0),
+            ])
+
+    if not rows:
+        return pd.DataFrame()
+
     df = pd.DataFrame(
-        candles,
-        columns=[
-            "date",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-        ],
+        rows,
+        columns=["date", "open", "high", "low", "close", "volume"],
     )
 
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["datetime"] = pd.to_datetime(
-        df["date"],
-        errors="coerce",
-    )
-
-    df = df.dropna(
-        subset=["datetime", "open", "high", "low", "close"]
-    ).copy()
-
-    df = df.sort_values("datetime").drop_duplicates(
-        subset=["datetime"], keep="last"
-    ).reset_index(drop=True)
-
-    if "volume" not in df:
-        df["volume"] = 0.0
+    df["datetime"] = pd.to_datetime(df["date"], errors="coerce", utc=True)
+    df = df.dropna(subset=["datetime", "open", "high", "low", "close"]).copy()
+    df["datetime"] = df["datetime"].dt.tz_convert(IST)
 
     df["volume"] = df["volume"].fillna(0.0)
+    df = (
+        df.sort_values("datetime")
+        .drop_duplicates(subset=["datetime"], keep="last")
+        .reset_index(drop=True)
+    )
     return df
 
 
-def normalise_timestamp_series(series):
-    dt = pd.to_datetime(series, errors="coerce")
-    try:
-        if getattr(dt.dt, "tz", None) is None:
-            return dt.dt.tz_localize(IST)
-        return dt.dt.tz_convert(IST)
-    except Exception:
-        return dt
-
-
-# ============================================================
-# FUTURES VOLUME MERGE
-# ============================================================
-
-def merge_futures_volume(spot_df, futures_candles):
+def merge_futures_volume(
+    spot_df: pd.DataFrame,
+    futures_candles: Any,
+) -> Tuple[pd.DataFrame, int]:
     """
-    Keep spot OHLC as the price source.
-    Replace/attach volume from NIFTY FUTURES by candle timestamp.
-    This is data alignment, not strategy logic.
+    Align NIFTY futures candle volume with spot candle timestamps.
+    Spot OHLC remains the price source.
     """
     out = spot_df.copy()
     out["futures_volume"] = 0.0
 
-    if not isinstance(futures_candles, list) or not futures_candles:
+    fut = build_candle_dataframe(futures_candles)
+    if fut.empty or out.empty:
         return out, 0
 
-    try:
-        fut = pd.DataFrame(
-            futures_candles,
-            columns=[
-                "date",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-            ],
-        )
+    fmap: Dict[pd.Timestamp, float] = {}
+    for _, row in fut.iterrows():
+        key = pd.Timestamp(row["datetime"]).floor("min")
+        fmap[key] = float(row["volume"])
 
-        fut["datetime"] = pd.to_datetime(
-            fut["date"], errors="coerce"
-        )
-        fut["volume"] = pd.to_numeric(
-            fut["volume"], errors="coerce"
-        ).fillna(0.0)
-        fut = fut.dropna(subset=["datetime"]).copy()
+    matched = 0
+    values: List[float] = []
+    for _, row in out.iterrows():
+        key = pd.Timestamp(row["datetime"]).floor("min")
+        if key in fmap:
+            values.append(fmap[key])
+            matched += 1
+        else:
+            values.append(float(row["volume"]) if pd.notna(row["volume"]) else 0.0)
 
-        out_key = normalise_timestamp_series(out["datetime"]).dt.floor("min")
-        fut_key = normalise_timestamp_series(fut["datetime"]).dt.floor("min")
-
-        fmap = {}
-        for key, vol in zip(fut_key, fut["volume"]):
-            fmap[key] = float(vol)
-
-        matched = 0
-        merged = []
-        for key, old_volume in zip(out_key, out["volume"]):
-            if key in fmap:
-                merged.append(fmap[key])
-                matched += 1
-            else:
-                merged.append(float(old_volume) if pd.notna(old_volume) else 0.0)
-
-        out["futures_volume"] = merged
-        return out, matched
-
-    except Exception as exc:
-        logging.warning("⚠️ Futures volume merge failed: %s", exc)
-        return out, 0
+    out["futures_volume"] = values
+    return out, matched
 
 
 # ============================================================
-# CLOSED CANDLE SELECTION
+# COMPLETED / FORMING CANDLE SPLIT
 # ============================================================
 
-def split_completed_and_forming(df, now):
-    """
-    Angel candle timestamp is treated as candle START time.
-    A 5-min candle is completed only after start + 5 minutes.
-    """
+def split_completed_and_forming(
+    df: pd.DataFrame,
+    now: datetime,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Angel 5-min candle timestamps are treated as candle START timestamps."""
+    if df.empty:
+        return df.copy(), df.copy()
+
     work = df.copy()
     work["datetime_ist"] = normalise_timestamp_series(work["datetime"])
-    cutoff = now.replace(second=0, microsecond=0)
+    cutoff = pd.Timestamp(now.replace(second=0, microsecond=0))
 
-    completed_mask = (
-        work["datetime_ist"] + pd.Timedelta(minutes=5)
-        <= pd.Timestamp(cutoff)
-    )
-
+    completed_mask = work["datetime_ist"] + pd.Timedelta(minutes=5) <= cutoff
     completed = work.loc[completed_mask].copy().reset_index(drop=True)
     forming = work.loc[~completed_mask].copy().reset_index(drop=True)
     return completed, forming
 
 
-def build_live_dataframe(completed_df, forming_df, live_spot, now):
-    """
-    Build a synthetic current candle for LIVE RSI/EMA only.
-    It is NEVER used for entry confirmation.
-    """
+def build_live_dataframe(
+    completed_df: pd.DataFrame,
+    forming_df: pd.DataFrame,
+    live_spot: float,
+    now: datetime,
+) -> pd.DataFrame:
+    """Append a synthetic live candle for LIVE indicators only."""
     if completed_df.empty:
         return pd.DataFrame()
 
     last = completed_df.iloc[-1]
-
     bucket_start = now.replace(
         minute=(now.minute // 5) * 5,
         second=0,
         microsecond=0,
     )
 
-    # If Angel supplied the current forming candle, use its OHLC structure.
     current = None
     if not forming_df.empty:
         same_bucket = forming_df[
@@ -257,16 +341,16 @@ def build_live_dataframe(completed_df, forming_df, live_spot, now):
 
     if current is not None:
         live_open = float(current["open"])
-        live_high = max(float(current["high"]), float(live_spot))
-        live_low = min(float(current["low"]), float(live_spot))
+        live_high = max(float(current["high"]), live_spot)
+        live_low = min(float(current["low"]), live_spot)
     else:
         live_open = float(last["close"])
-        live_high = max(live_open, float(live_spot))
-        live_low = min(live_open, float(live_spot))
+        live_high = max(live_open, live_spot)
+        live_low = min(live_open, live_spot)
 
     live_row = {
         "date": bucket_start.isoformat(),
-        "datetime": bucket_start,
+        "datetime": pd.Timestamp(bucket_start),
         "datetime_ist": pd.Timestamp(bucket_start),
         "open": live_open,
         "high": live_high,
@@ -276,539 +360,580 @@ def build_live_dataframe(completed_df, forming_df, live_spot, now):
         "futures_volume": 0.0,
     }
 
-    out = completed_df.copy()
-    out = pd.concat([out, pd.DataFrame([live_row])], ignore_index=True)
-    return out
+    return pd.concat([completed_df.copy(), pd.DataFrame([live_row])], ignore_index=True)
 
 
 # ============================================================
-# LEVEL ENGINE
+# DAY / PREVIOUS DAY / MORNING BOX
 # ============================================================
 
-def build_level_engine(df, spot, day_high, day_low):
-    today = now_ist().date()
-    levels = []
+def _date_series(df: pd.DataFrame) -> pd.Series:
+    return normalise_timestamp_series(df["datetime"]).dt.date
 
-    def add(name, value, source, strength):
+
+def calculate_session_levels(
+    df: pd.DataFrame,
+    spot: float,
+    live_day_high: Optional[float],
+    live_day_low: Optional[float],
+    now: datetime,
+) -> Dict[str, Any]:
+    """Calculate structural price levels only; no trade decision."""
+    levels: List[Dict[str, Any]] = []
+    today = now.date()
+
+    def add(name: str, value: Optional[float], source: str, strength: int) -> None:
+        value = safe_float(value)
         if value is not None:
-            levels.append({"name": name, "level": float(value), "source": source, "strength": strength})
+            levels.append({
+                "name": name,
+                "level": round(value, 2),
+                "source": source,
+                "strength": strength,
+            })
+
+    # Live day H/L from worker.
+    day_high = safe_float(live_day_high)
+    day_low = safe_float(live_day_low)
+    if day_high is not None:
+        day_high = max(day_high, spot)
+    else:
+        day_high = spot
+    if day_low is not None:
+        day_low = min(day_low, spot)
+    else:
+        day_low = spot
 
     add("Day High", day_high, "DAY", 5)
     add("Day Low", day_low, "DAY", 5)
 
-    dates = df["datetime"].dt.date
-    prev_dates = sorted({d for d in dates if d < today})
-    if prev_dates:
-        prev = df[dates == prev_dates[-1]]
-        if not prev.empty:
-            add("Previous Day High", prev["high"].max(), "PREVIOUS_DAY", 4)
-            add("Previous Day Low", prev["low"].min(), "PREVIOUS_DAY", 4)
+    dates = _date_series(df)
+    prior_dates = sorted({d for d in dates if d < today})
+    previous_day_high = None
+    previous_day_low = None
+    if prior_dates:
+        prev_day = df[dates == prior_dates[-1]]
+        if not prev_day.empty:
+            previous_day_high = float(prev_day["high"].max())
+            previous_day_low = float(prev_day["low"].min())
+            add("Previous Day High", previous_day_high, "PREVIOUS_DAY", 4)
+            add("Previous Day Low", previous_day_low, "PREVIOUS_DAY", 4)
 
-    today_df = df[dates == today]
+    # Morning Box = first 45 minutes: 09:15 inclusive to 10:00 exclusive.
+    morning_high = None
+    morning_low = None
+    today_df = df[dates == today].copy()
     if not today_df.empty:
-        mins = today_df["datetime"].dt.hour * 60 + today_df["datetime"].dt.minute
-        box = today_df[mins <= 600]
-        if not box.empty:
-            add("Morning Box High", box["high"].max(), "MORNING_BOX", 4)
-            add("Morning Box Low", box["low"].min(), "MORNING_BOX", 4)
+        local_dt = normalise_timestamp_series(today_df["datetime"])
+        mins = local_dt.dt.hour * 60 + local_dt.dt.minute
+        morning = today_df[(mins >= 9 * 60 + 15) & (mins < 10 * 60)]
+        if not morning.empty:
+            morning_high = float(morning["high"].max())
+            morning_low = float(morning["low"].min())
+            add("Morning Box High", morning_high, "MORNING_BOX", 4)
+            add("Morning Box Low", morning_low, "MORNING_BOX", 4)
 
-    base = round(float(spot) / 100.0) * 100.0
-    for level in (base - 100, base, base + 100, base + 200):
-        add(f"Psychological {int(level)}", level, "PSYCHOLOGICAL_100", 3)
+    # Psychological levels: 100-point spacing as required by the architecture.
+    base = math.floor(spot / PSYCHOLOGICAL_STEP) * PSYCHOLOGICAL_STEP
+    for level in range(
+        int(base - 200),
+        int(base + 301),
+        PSYCHOLOGICAL_STEP,
+    ):
+        add(
+            f"Psychological {level}",
+            float(level),
+            "PSYCHOLOGICAL_100",
+            3,
+        )
 
-    unique = {}
+    # De-duplicate levels at same price while retaining strongest source.
+    unique: Dict[float, Dict[str, Any]] = {}
     for item in levels:
-        key = round(item["level"], 2)
+        key = round(float(item["level"]), 2)
         if key not in unique or item["strength"] > unique[key]["strength"]:
             unique[key] = item
 
     ordered = sorted(unique.values(), key=lambda x: x["level"])
-    supports = sorted([x for x in ordered if x["level"] < spot], key=lambda x: (spot-x["level"], -x["strength"]))
-    resistances = sorted([x for x in ordered if x["level"] > spot], key=lambda x: (x["level"]-spot, -x["strength"]))
+    supports = sorted(
+        [x for x in ordered if x["level"] < spot],
+        key=lambda x: (spot - x["level"], -x["strength"]),
+    )
+    resistances = sorted(
+        [x for x in ordered if x["level"] > spot],
+        key=lambda x: (x["level"] - spot, -x["strength"]),
+    )
+
+    nearest_support = supports[0] if supports else None
+    nearest_resistance = resistances[0] if resistances else None
+
+    # Major levels are exposed as DATA for paper_engine.
+    major_levels = sorted(
+        [x for x in ordered if x["source"] in {"DAY", "PREVIOUS_DAY", "MORNING_BOX"}],
+        key=lambda x: (abs(x["level"] - spot), -x["strength"]),
+    )
 
     return {
         "levels": ordered,
-        "nearest_support": supports[0] if supports else None,
-        "nearest_resistance": resistances[0] if resistances else None,
+        "major_levels": major_levels,
+        "supports": supports,
+        "resistances": resistances,
+        "nearest_support": nearest_support,
+        "nearest_resistance": nearest_resistance,
+        "day_high": day_high,
+        "day_low": day_low,
+        "previous_day_high": previous_day_high,
+        "previous_day_low": previous_day_low,
+        "morning_box_high": morning_high,
+        "morning_box_low": morning_low,
+        "psychological_step": PSYCHOLOGICAL_STEP,
     }
 
 
 # ============================================================
-# STRATEGY EVALUATION
+# CANDLE STRUCTURE
 # ============================================================
 
-def evaluate_strategy(
-    signal_df,
-    live_spot,
-    intraday_high,
-    intraday_low,
-    signal_volume,
-    signal_volume_avg,
-):
-    """Evaluate the existing strategy ONLY on the last completed candle."""
+def candle_structure(row: Optional[pd.Series]) -> Dict[str, Any]:
+    if row is None:
+        return {
+            "time": None,
+            "open": None,
+            "high": None,
+            "low": None,
+            "close": None,
+            "range": None,
+            "body": None,
+            "upper_wick": None,
+            "lower_wick": None,
+            "body_ratio": None,
+            "upper_wick_body_ratio": None,
+            "lower_wick_body_ratio": None,
+            "candle_size_valid": False,
+            "opposite_wick_5pct_for_bull": False,
+            "opposite_wick_5pct_for_bear": False,
+            "bullish": False,
+            "bearish": False,
+        }
 
-    if len(signal_df) < 22:
-        return None
+    o = float(row["open"])
+    h = float(row["high"])
+    l = float(row["low"])
+    c = float(row["close"])
 
-    # Signal indicators are calculated from completed candles only.
-    signal_rsi = calculate_tv_rsi(signal_df["close"], RSI_PERIOD)
-    signal_ema9 = float(
-        signal_df["close"].ewm(span=9, adjust=False).mean().iloc[-1]
-    )
-    signal_ema20 = float(
-        signal_df["close"].ewm(span=20, adjust=False).mean().iloc[-1]
-    )
-
-    c = signal_df.iloc[-1]
-    c_open = float(c["open"])
-    c_close = float(c["close"])
-    c_high = float(c["high"])
-    c_low = float(c["low"])
-    candle_time = str(c["date"])
-
-    candle_range = abs(c_high - c_low)
-    candle_body = abs(c_close - c_open)
-    candle_body_safe = max(candle_body, 0.01)
-    candle_range_safe = max(candle_range, 0.01)
-
-    top_wick = max(0.0, c_high - max(c_open, c_close))
-    bottom_wick = max(0.0, min(c_open, c_close) - c_low)
-
-    # Strategy continues to use current/live spot for the live context,
-    # but the candle structure is strictly the completed candle.
-    psy_level = int(round(live_spot / 50.0) * 50)
-
-    is_candle_size_valid = (
-        CANDLE_MIN <= candle_range_safe <= CANDLE_MAX
-    )
-
-    upper_rejection = (
-        abs(c_high - psy_level) <= 25.0
-        and top_wick >= candle_range_safe * 0.50
-    )
-
-    lower_rejection = (
-        abs(c_low - psy_level) <= 25.0
-        and bottom_wick >= candle_range_safe * 0.50
-    )
-
-    is_rejection = upper_rejection or lower_rejection
-
-    is_pullback = (
-        not is_rejection
-        and abs(live_spot - signal_ema9) <= 25.0
-    )
-
-    otype = "NONE"
-    rsi_status = "FAIL"
-    ema_status = "FAIL"
-    setup_name = "NONE"
-    candle_confirmed = False
-
-    if is_rejection:
-        if upper_rejection:
-            otype = "PE"
-        elif lower_rejection:
-            otype = "CE"
-
-        rsi_status = "PASS"
-        ema_status = "PASS"
-        setup_name = "Major Rejection"
-        candle_confirmed = True
-
-    elif is_pullback:
-        otype = "CE" if live_spot >= signal_ema9 else "PE"
-
-        rsi_status = (
-            "PASS" if 45.0 <= signal_rsi <= 55.0 else "FAIL"
-        )
-        ema_status = (
-            "PASS" if abs(live_spot - signal_ema9) <= 15.0 else "FAIL"
-        )
-        setup_name = "Pullback"
-
-        opposite_wick = top_wick if otype == "CE" else bottom_wick
-        candle_confirmed = (
-            opposite_wick <= candle_body_safe * WICK_BODY_MAX
-        )
-
-    else:
-        if live_spot > signal_ema9:
-            otype = "CE"
-            rsi_status = "PASS" if signal_rsi >= 60.0 else "FAIL"
-        else:
-            otype = "PE"
-            rsi_status = "PASS" if signal_rsi <= 40.0 else "FAIL"
-
-        ema_status = "PASS"
-        setup_name = "Breakout"
-
-        opposite_wick = top_wick if otype == "CE" else bottom_wick
-        candle_confirmed = (
-            opposite_wick <= candle_body_safe * WICK_BODY_MAX
-        )
-
-    trade_type = f"{otype}_BUY" if otype != "NONE" else "NONE"
-
-    # ---------------------------------------------------------
-    # CLOSED-CANDLE VOLUME GATE
-    # ---------------------------------------------------------
-    if signal_volume_avg > 0:
-        volume_ratio = round(signal_volume / signal_volume_avg, 2)
-    else:
-        volume_ratio = 0.0
-
-    volume_status = (
-        "PASS" if volume_ratio >= VOLUME_PASS_RATIO else "FAIL"
-    )
-
-    # ---------------------------------------------------------
-    # LIVE DAY HIGH / LOW RUNWAY
-    # ---------------------------------------------------------
-    if otype == "CE":
-        runway_distance = max(0.0, intraday_high - live_spot)
-    elif otype == "PE":
-        runway_distance = max(0.0, live_spot - intraday_low)
-    else:
-        runway_distance = 0.0
-
-    runway_status = (
-        "PASS" if runway_distance >= RUNWAY_MIN else "FAIL"
-    )
-
-    signal_gate = (
-        otype != "NONE"
-        and rsi_status == "PASS"
-        and ema_status == "PASS"
-        and volume_status == "PASS"
-        and runway_status == "PASS"
-    )
-
-    final_trigger = (
-        signal_gate
-        and is_candle_size_valid
-        and candle_confirmed
-    )
-
-    failed = []
-    if rsi_status != "PASS":
-        failed.append("RSI")
-    if ema_status != "PASS":
-        failed.append("EMA")
-    if volume_status != "PASS":
-        failed.append("VOLUME")
-    if runway_status != "PASS":
-        failed.append("RUNWAY")
-
-    if not signal_gate:
-        reason = (
-            f"🔒 {setup_name} LOCK | "
-            f"Failed: {', '.join(failed) if failed else 'SETUP'}"
-        )
-    elif not is_candle_size_valid:
-        reason = (
-            f"⚠️ Size Lock | Candle range {candle_range:.1f} pts "
-            f"(required {CANDLE_MIN:.0f}-{CANDLE_MAX:.0f})"
-        )
-    elif not candle_confirmed:
-        reason = (
-            "⚠️ Marubozu Lock | "
-            "Opposite wick exceeds 5% of candle body"
-        )
-    else:
-        reason = (
-            f"🟢 SIGNAL READY | {setup_name} | {trade_type} | "
-            f"Runway {runway_distance:.1f} pts"
-        )
+    rng = max(0.0, h - l)
+    body = abs(c - o)
+    safe_body = max(body, 0.01)
+    upper = max(0.0, h - max(o, c))
+    lower = max(0.0, min(o, c) - l)
 
     return {
-        "rsi_v": signal_rsi,
-        "ema9": signal_ema9,
-        "ema20": signal_ema20,
-        "rsi_status": rsi_status,
-        "ema_status": ema_status,
-        "vol_status": volume_status,
-        "vol_val": f"{volume_ratio}x",
-        "runway_status": runway_status,
-        "runway_val": f"{runway_distance:.1f} pts",
-        "run_df": runway_distance,
-        "otype": otype,
-        "trade_type": trade_type,
-        "option_strike": int(round(live_spot / 50.0) * 50),
-        "next_w": intraday_high if otype == "CE" else intraday_low if otype == "PE" else live_spot,
-        "algo_reason": reason,
-        "signal_triggered": bool(final_trigger),
-        "strategy_used": setup_name,
-        "candle_time": candle_time,
-        "c_open": c_open,
-        "c_close": c_close,
-        "c_high": c_high,
-        "c_low": c_low,
-        "candle_range": candle_range,
-        "candle_body": candle_body,
-        "top_wick": top_wick,
-        "bottom_wick": bottom_wick,
-        "candle_size_valid": bool(is_candle_size_valid),
-        "candle_confirmed": bool(candle_confirmed),
-        "signal_volume": signal_volume,
-        "signal_volume_avg": signal_volume_avg,
-        "signal_volume_ratio": volume_ratio,
+        "time": str(row["date"]) if "date" in row else pd.Timestamp(row["datetime"]).isoformat(),
+        "open": o,
+        "high": h,
+        "low": l,
+        "close": c,
+        "range": round(rng, 4),
+        "body": round(body, 4),
+        "upper_wick": round(upper, 4),
+        "lower_wick": round(lower, 4),
+        "body_ratio": round(body / max(rng, 0.01), 4),
+        "upper_wick_body_ratio": round(upper / safe_body, 4),
+        "lower_wick_body_ratio": round(lower / safe_body, 4),
+        "candle_size_valid": bool(CANDLE_MIN <= rng <= CANDLE_MAX),
+        "opposite_wick_5pct_for_bull": bool(upper <= safe_body * WICK_BODY_MAX),
+        "opposite_wick_5pct_for_bear": bool(lower <= safe_body * WICK_BODY_MAX),
+        "bullish": bool(c > o),
+        "bearish": bool(c < o),
+    }
+
+
+def build_recent_candles(df: pd.DataFrame, count: int = 30) -> List[Dict[str, Any]]:
+    if df.empty:
+        return []
+    recent = df.tail(count)
+    result: List[Dict[str, Any]] = []
+    for _, row in recent.iterrows():
+        item = candle_structure(row)
+        item["volume"] = float(row.get("volume", 0.0))
+        item["futures_volume"] = float(row.get("futures_volume", 0.0))
+        item["datetime"] = pd.Timestamp(row["datetime"]).isoformat()
+        result.append(item)
+    return result
+
+
+# ============================================================
+# VOLUME PROCESSING
+# ============================================================
+
+def calculate_volume_metrics(
+    completed_df: pd.DataFrame,
+    live_futures_volume: Any,
+) -> Dict[str, Any]:
+    hist = pd.to_numeric(
+        completed_df.get("futures_volume", pd.Series(dtype=float)),
+        errors="coerce",
+    ).fillna(0.0)
+
+    nonzero = hist[hist > 0]
+    historical_avg = (
+        float(nonzero.tail(VOLUME_AVG_PERIOD).mean())
+        if not nonzero.empty
+        else 0.0
+    )
+
+    # Last completed candle volume and average of prior candles only.
+    signal_volume = float(hist.iloc[-1]) if not hist.empty else 0.0
+    prior_window = hist.iloc[-(VOLUME_AVG_PERIOD + 1):-1]
+    prior_nonzero = prior_window[prior_window > 0]
+    signal_avg = (
+        float(prior_nonzero.tail(VOLUME_AVG_PERIOD).mean())
+        if not prior_nonzero.empty
+        else 0.0
+    )
+
+    signal_ratio = (
+        round(signal_volume / signal_avg, 4)
+        if signal_avg > 0
+        else 0.0
+    )
+
+    live_volume = safe_float(live_futures_volume)
+    live_ratio = (
+        round(live_volume / historical_avg, 4)
+        if live_volume is not None and historical_avg > 0
+        else 0.0
+    )
+
+    return {
+        "source": "NIFTY_FUTURES",
+        "live_futures_volume_5m": live_volume,
+        "historical_average_volume": historical_avg,
+        "completed_candle_volume": signal_volume,
+        "completed_candle_average_prior_20": signal_avg,
+        "completed_candle_ratio": signal_ratio,
+        "live_volume_ratio": live_ratio,
+        "volume_threshold_ratio": VOLUME_PASS_RATIO,
+        "completed_volume_status": "PASS" if signal_ratio >= VOLUME_PASS_RATIO else "FAIL",
+        "live_volume_status": "PASS" if live_ratio >= VOLUME_PASS_RATIO else "FAIL",
     }
 
 
 # ============================================================
-# MAIN ENGINE
+# RUNWAY / DISTANCE PROCESSING
 # ============================================================
 
-def start_indicator_engine():
-    logging.info(
-        "🟢 LIVE Indicator engine started | "
-        "Indicators=LIVE | Entry=ONLY CLOSED 5-MIN CANDLE"
+def calculate_distances(spot: float, day_high: float, day_low: float) -> Dict[str, Any]:
+    upside = max(0.0, day_high - spot)
+    downside = max(0.0, spot - day_low)
+
+    return {
+        "to_day_high": round(upside, 2),
+        "to_day_low": round(downside, 2),
+        "ce_runway": round(upside, 2),
+        "pe_runway": round(downside, 2),
+        "runway_min_points": RUNWAY_MIN,
+        "ce_runway_status": "PASS" if upside >= RUNWAY_MIN else "FAIL",
+        "pe_runway_status": "PASS" if downside >= RUNWAY_MIN else "FAIL",
+    }
+
+
+# ============================================================
+# MAIN CALCULATION
+# ============================================================
+
+def calculate_indicators(raw: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
+    spot = safe_float(raw.get("live_spot"))
+    if spot is None:
+        # Compatibility with alternate worker shape.
+        direct = raw.get("direct") or {}
+        spot = safe_float(direct.get("spot"))
+    if spot is None:
+        return None
+
+    candles = raw.get("candles") or []
+    futures_candles = raw.get("futures_candles") or []
+
+    df = build_candle_dataframe(candles)
+    if df.empty:
+        return None
+
+    df, volume_matches = merge_futures_volume(df, futures_candles)
+    completed_df, forming_df = split_completed_and_forming(df, now)
+
+    if completed_df.empty:
+        return None
+
+    live_df = build_live_dataframe(completed_df, forming_df, spot, now)
+
+    # --------------------------------------------------------
+    # LIVE indicators: include current forming candle.
+    # --------------------------------------------------------
+    live_rsi = calculate_tv_rsi(live_df["close"], RSI_PERIOD) if not live_df.empty else 50.0
+    live_ema9 = ema(live_df["close"], EMA_FAST) if not live_df.empty else 0.0
+    live_ema20 = ema(live_df["close"], EMA_SLOW) if not live_df.empty else 0.0
+
+    # --------------------------------------------------------
+    # COMPLETED indicators: NEVER include forming candle.
+    # --------------------------------------------------------
+    closed_rsi = calculate_tv_rsi(completed_df["close"], RSI_PERIOD)
+    closed_ema9 = ema(completed_df["close"], EMA_FAST)
+    closed_ema20 = ema(completed_df["close"], EMA_SLOW)
+
+    last_closed = completed_df.iloc[-1]
+    closed_candle = candle_structure(last_closed)
+    forming_candle = candle_structure(forming_df.iloc[-1]) if not forming_df.empty else None
+
+    # --------------------------------------------------------
+    # Day high / low. Worker is the primary live source.
+    # --------------------------------------------------------
+    worker_day_high = safe_float(raw.get("live_day_high"))
+    worker_day_low = safe_float(raw.get("live_day_low"))
+
+    if worker_day_high is None:
+        today_mask = _date_series(df) == now.date()
+        today_df = df[today_mask]
+        worker_day_high = float(today_df["high"].max()) if not today_df.empty else spot
+    if worker_day_low is None:
+        today_mask = _date_series(df) == now.date()
+        today_df = df[today_mask]
+        worker_day_low = float(today_df["low"].min()) if not today_df.empty else spot
+
+    intraday_high = max(worker_day_high, spot)
+    intraday_low = min(worker_day_low, spot)
+
+    # --------------------------------------------------------
+    # Levels.
+    # --------------------------------------------------------
+    levels = calculate_session_levels(
+        df=df,
+        spot=spot,
+        live_day_high=intraday_high,
+        live_day_low=intraday_low,
+        now=now,
     )
 
-    last_logged_candle = None
+    # --------------------------------------------------------
+    # Volume.
+    # --------------------------------------------------------
+    volume = calculate_volume_metrics(
+        completed_df=completed_df,
+        live_futures_volume=raw.get("live_futures_volume_5m"),
+    )
+
+    distances = calculate_distances(
+        spot=spot,
+        day_high=float(levels["day_high"]),
+        day_low=float(levels["day_low"]),
+    )
+
+    # --------------------------------------------------------
+    # EMA relationships / market context DATA only.
+    # --------------------------------------------------------
+    ema_context = {
+        "live_ema9_above_ema20": bool(live_ema9 > live_ema20),
+        "closed_ema9_above_ema20": bool(closed_ema9 > closed_ema20),
+        "live_spot_above_ema9": bool(spot > live_ema9),
+        "live_spot_above_ema20": bool(spot > live_ema20),
+        "closed_close_above_ema9": bool(float(last_closed["close"]) > closed_ema9),
+        "closed_close_above_ema20": bool(float(last_closed["close"]) > closed_ema20),
+        "live_ema9_distance": round(spot - live_ema9, 2),
+        "live_ema20_distance": round(spot - live_ema20, 2),
+        "closed_ema9_distance": round(float(last_closed["close"]) - closed_ema9, 2),
+        "closed_ema20_distance": round(float(last_closed["close"]) - closed_ema20, 2),
+    }
+
+    # --------------------------------------------------------
+    # Level distances. Paper engine can use these to identify
+    # rejection/breakout candidates without indicator deciding.
+    # --------------------------------------------------------
+    def level_distance(level_obj: Optional[Dict[str, Any]]) -> Optional[float]:
+        if not level_obj:
+            return None
+        return round(abs(float(level_obj["level"]) - spot), 2)
+
+    nearest_support_distance = level_distance(levels["nearest_support"])
+    nearest_resistance_distance = level_distance(levels["nearest_resistance"])
+
+    # The actual breakout reference is DATA: nearest structural level in
+    # the direction of movement. No breakout decision is made here.
+    breakout_candidates = {
+        "upside": [
+            x for x in levels["resistances"]
+            if x["source"] in {"DAY", "PREVIOUS_DAY", "MORNING_BOX", "PSYCHOLOGICAL_100"}
+        ][:5],
+        "downside": [
+            x for x in levels["supports"]
+            if x["source"] in {"DAY", "PREVIOUS_DAY", "MORNING_BOX", "PSYCHOLOGICAL_100"}
+        ][:5],
+    }
+
+    # --------------------------------------------------------
+    # Full processed payload.
+    # --------------------------------------------------------
+    payload: Dict[str, Any] = {
+        "schema_version": 2,
+        "processor": "indicator_calc",
+        "processor_role": "TECHNICAL_DATA_ONLY",
+        "strategy_decision": False,
+        "market_status": raw.get("market_status", "UNKNOWN"),
+        "worker_status": raw.get("worker_status", "UNKNOWN"),
+        "calculated_at_ist": now.isoformat(),
+        "source_last_update": raw.get("last_update_ist", raw.get("last_update")),
+
+        # Live market data.
+        "live_spot": round(spot, 2),
+        "spot_timestamp": raw.get("spot_timestamp"),
+        "live_day_high": round(intraday_high, 2),
+        "live_day_low": round(intraday_low, 2),
+
+        # LIVE indicators.
+        "live": {
+            "rsi": round(live_rsi, 2),
+            "ema9": round(live_ema9, 2),
+            "ema20": round(live_ema20, 2),
+            "candle": forming_candle,
+            "forming_candle_present": bool(not forming_df.empty),
+        },
+
+        # COMPLETED candle indicators used by downstream strategy.
+        "completed": {
+            "candle_time": closed_candle["time"],
+            "rsi": round(closed_rsi, 2),
+            "ema9": round(closed_ema9, 2),
+            "ema20": round(closed_ema20, 2),
+            "candle": closed_candle,
+            "is_confirmable_candle": True,
+        },
+
+        # Same values in explicit fields for easy paper_engine/dashboard access.
+        "rsi_live": round(live_rsi, 2),
+        "ema9_live": round(live_ema9, 2),
+        "ema20_live": round(live_ema20, 2),
+        "rsi_closed": round(closed_rsi, 2),
+        "ema9_closed": round(closed_ema9, 2),
+        "ema20_closed": round(closed_ema20, 2),
+
+        "ema_context": ema_context,
+        "volume": volume,
+        "levels": levels["levels"],
+        "major_levels": levels["major_levels"],
+        "supports": levels["supports"],
+        "resistances": levels["resistances"],
+        "nearest_support": levels["nearest_support"],
+        "nearest_resistance": levels["nearest_resistance"],
+        "nearest_support_distance": nearest_support_distance,
+        "nearest_resistance_distance": nearest_resistance_distance,
+        "day_high": levels["day_high"],
+        "day_low": levels["day_low"],
+        "previous_day_high": levels["previous_day_high"],
+        "previous_day_low": levels["previous_day_low"],
+        "morning_box_high": levels["morning_box_high"],
+        "morning_box_low": levels["morning_box_low"],
+        "psychological_step": PSYCHOLOGICAL_STEP,
+        "breakout_candidates": breakout_candidates,
+        "distances": distances,
+
+        # Rule thresholds are exposed as DATA so paper_engine does not need
+        # to duplicate hidden constants.
+        "thresholds": {
+            "rsi_period": RSI_PERIOD,
+            "ema_fast": EMA_FAST,
+            "ema_slow": EMA_SLOW,
+            "volume_avg_period": VOLUME_AVG_PERIOD,
+            "volume_pass_ratio": VOLUME_PASS_RATIO,
+            "candle_range_min": CANDLE_MIN,
+            "candle_range_max": CANDLE_MAX,
+            "runway_min_points": RUNWAY_MIN,
+            "wick_body_max_ratio": WICK_BODY_MAX,
+            "psychological_step": PSYCHOLOGICAL_STEP,
+        },
+
+        # Data quality / timing.
+        "completed_candle_count": int(len(completed_df)),
+        "forming_candle_count": int(len(forming_df)),
+        "volume_merge_matches": int(volume_matches),
+        "latest_completed_candle": closed_candle,
+        "recent_completed_candles": build_recent_candles(completed_df, 30),
+        "worker_websocket_connected": raw.get("websocket_connected"),
+        "candle_last_success": raw.get("candle_last_success"),
+        "candle_retry_delay": raw.get("candle_retry_delay"),
+        "futures_candle_last_success": raw.get("futures_candle_last_success"),
+        "futures_candle_retry_delay": raw.get("futures_candle_retry_delay"),
+    }
+
+    # Compatibility/raw passthrough useful to dashboard/paper engine,
+    # without making a strategy decision.
+    payload["futures_contract"] = raw.get("futures_contract")
+    payload["futures_tick"] = raw.get("futures_tick")
+    payload["live_futures_volume_5m"] = raw.get("live_futures_volume_5m")
+
+    return json_safe(payload)
+
+
+# ============================================================
+# ENGINE LOOP
+# ============================================================
+
+def start_indicator_engine() -> None:
+    logging.info(
+        "🟢 indicator_calc started | TECHNICAL DATA ONLY | "
+        "No CALL/PUT | No BUY/SELL | No entry/exit"
+    )
+
+    last_log_time = 0.0
+    last_candle_time = None
 
     while True:
         raw = load_raw()
         if not raw:
-            time.sleep(0.5)
+            time.sleep(WAIT_INTERVAL_SEC)
             continue
 
         try:
-            if "live_spot" not in raw:
-                time.sleep(0.5)
-                continue
-
             now = now_ist()
-            spot = float(raw["live_spot"])
+            processed = calculate_indicators(raw, now)
 
-            candles = raw.get("candles") or []
-            if len(candles) < 22:
+            if processed is None:
+                time.sleep(WAIT_INTERVAL_SEC)
+                continue
+
+            atomic_write_json(OUTPUT_FILE, processed)
+
+            current_candle = (
+                processed.get("completed", {}) or {}
+            ).get("candle_time")
+            current_time = time.time()
+
+            if current_candle != last_candle_time or current_time - last_log_time >= LOG_INTERVAL_SEC:
+                last_candle_time = current_candle
+                last_log_time = current_time
+
+                live = processed.get("live", {}) or {}
+                closed = processed.get("completed", {}) or {}
+                vol = processed.get("volume", {}) or {}
+
                 logging.info(
-                    "⏳ Waiting for sufficient 5-min candles: %d/22",
-                    len(candles),
-                )
-                time.sleep(1)
-                continue
-
-            df = build_spot_dataframe(candles)
-            if len(df) < 22:
-                time.sleep(1)
-                continue
-
-            # Merge NIFTY futures historical volume without changing spot OHLC.
-            df, matched = merge_futures_volume(
-                df,
-                raw.get("futures_candles") or [],
-            )
-
-            completed_df, forming_df = split_completed_and_forming(df, now)
-
-            if len(completed_df) < 22:
-                logging.info(
-                    "⏳ Waiting for completed 5-min candles: %d/22",
-                    len(completed_df),
-                )
-                time.sleep(1)
-                continue
-
-            # -------------------------------------------------
-            # LIVE INDICATORS
-            # -------------------------------------------------
-            live_df = build_live_dataframe(
-                completed_df,
-                forming_df,
-                spot,
-                now,
-            )
-
-            if live_df.empty:
-                time.sleep(1)
-                continue
-
-            live_rsi = calculate_tv_rsi(live_df["close"], RSI_PERIOD)
-            live_ema9 = float(
-                live_df["close"].ewm(span=9, adjust=False).mean().iloc[-1]
-            )
-            live_ema20 = float(
-                live_df["close"].ewm(span=20, adjust=False).mean().iloc[-1]
-            )
-
-            # -------------------------------------------------
-            # LIVE DAY HIGH / LOW
-            # -------------------------------------------------
-            live_high = raw.get("live_day_high")
-            live_low = raw.get("live_day_low")
-
-            if live_high is None:
-                live_high = spot
-            if live_low is None:
-                live_low = spot
-
-            intraday_high = max(float(live_high), spot)
-            intraday_low = min(float(live_low), spot)
-
-            # -------------------------------------------------
-            # LIVE VOLUME
-            # -------------------------------------------------
-            live_volume = raw.get("live_futures_volume_5m")
-            try:
-                live_volume = float(live_volume) if live_volume is not None else None
-            except (TypeError, ValueError):
-                live_volume = None
-
-            # Historical completed futures volumes.
-            hist_volumes = pd.to_numeric(
-                completed_df["futures_volume"], errors="coerce"
-            ).fillna(0.0)
-
-            nonzero_hist = hist_volumes[hist_volumes > 0]
-            live_volume_avg = (
-                float(nonzero_hist.tail(VOLUME_AVG_PERIOD).mean())
-                if not nonzero_hist.empty
-                else 0.0
-            )
-
-            if live_volume is not None and live_volume_avg > 0:
-                live_volume_ratio = round(live_volume / live_volume_avg, 2)
-                live_volume_status = (
-                    "PASS" if live_volume_ratio >= VOLUME_PASS_RATIO else "FAIL"
-                )
-                live_volume_display = f"{live_volume_ratio}x Live"
-            elif live_volume is not None:
-                live_volume_ratio = 0.0
-                live_volume_status = "FAIL"
-                live_volume_display = "0.0x Live"
-            else:
-                live_volume_ratio = 0.0
-                live_volume_status = "FAIL"
-                live_volume_display = "WAIT"
-
-            # -------------------------------------------------
-            # CLOSED-CANDLE SIGNAL
-            # -------------------------------------------------
-            signal_volume_series = hist_volumes
-            signal_volume = float(signal_volume_series.iloc[-1])
-            signal_window = signal_volume_series.iloc[-(VOLUME_AVG_PERIOD + 1):-1]
-            signal_window = signal_window[signal_window > 0]
-            signal_volume_avg = (
-                float(signal_window.tail(VOLUME_AVG_PERIOD).mean())
-                if not signal_window.empty
-                else 0.0
-            )
-
-            signal = evaluate_strategy(
-                completed_df,
-                spot,
-                intraday_high,
-                intraday_low,
-                signal_volume,
-                signal_volume_avg,
-            )
-
-            if signal is None:
-                time.sleep(1)
-                continue
-
-            # -------------------------------------------------
-            # OVERWRITE DASHBOARD VALUES WITH LIVE INDICATORS
-            # -------------------------------------------------
-            # Paper engine still uses signal_triggered, which was calculated
-            # from the completed candle above. Dashboard gets live values.
-            signal["live_spot"] = spot
-            signal["rsi_v"] = round(live_rsi, 2)
-            signal["ema9"] = round(live_ema9, 2)
-            signal["ema20"] = round(live_ema20, 2)
-            signal["vol_val"] = live_volume_display
-            signal["vol_status"] = live_volume_status
-
-            # Explicit closed-candle copies for backend/paper-trade records.
-            closed_signal = evaluate_strategy(
-                completed_df,
-                spot,
-                intraday_high,
-                intraday_low,
-                signal_volume,
-                signal_volume_avg,
-            )
-
-            signal["signal_rsi"] = round(float(closed_signal["rsi_v"]), 2)
-            signal["signal_ema9"] = round(float(closed_signal["ema9"]), 2)
-            signal["signal_ema20"] = round(float(closed_signal["ema20"]), 2)
-            signal["signal_rsi_status"] = closed_signal["rsi_status"]
-            signal["signal_ema_status"] = closed_signal["ema_status"]
-            signal["signal_vol_status"] = closed_signal["vol_status"]
-            signal["signal_vol_val"] = closed_signal["vol_val"]
-            signal["signal_runway_status"] = closed_signal["runway_status"]
-            signal["signal_runway_val"] = closed_signal["runway_val"]
-            signal["signal_algo_reason"] = closed_signal["algo_reason"]
-            signal["signal_strategy_used"] = closed_signal["strategy_used"]
-            signal["signal_candle_time"] = closed_signal["candle_time"]
-            signal["signal_option_strike"] = closed_signal["option_strike"]
-            signal["signal_trade_type"] = closed_signal["trade_type"]
-
-            signal["intraday_high"] = intraday_high
-            signal["intraday_low"] = intraday_low
-            signal["psy_level"] = int(round(spot / 50.0) * 50)
-
-            level_engine = build_level_engine(
-                df, spot, intraday_high, intraday_low
-            )
-            signal["level_engine"] = level_engine
-            signal["levels"] = level_engine["levels"]
-            signal["nearest_support"] = (
-                level_engine["nearest_support"]["level"]
-                if level_engine["nearest_support"] else None
-            )
-            signal["nearest_resistance"] = (
-                level_engine["nearest_resistance"]["level"]
-                if level_engine["nearest_resistance"] else None
-            )
-            signal["live_volume"] = live_volume
-            signal["live_volume_avg"] = live_volume_avg
-            signal["live_volume_ratio"] = live_volume_ratio
-            signal["live_volume_status"] = live_volume_status
-            signal["completed_candle_count"] = len(completed_df)
-            signal["forming_candle_present"] = not forming_df.empty
-            signal["volume_merge_matches"] = matched
-            signal["calculated_at"] = now.isoformat()
-
-            atomic_write_json("strategy_signal.json", signal)
-
-            # Useful logs without flooding Render with every tick.
-            candle_key = signal["candle_time"]
-            if candle_key != last_logged_candle:
-                last_logged_candle = candle_key
-                logging.info(
-                    "🧠 SIGNAL CANDLE=%s | RSI=%.2f | EMA9=%.2f | "
-                    "EMA20=%.2f | VOL=%.2fx | RUNWAY=%.1f | %s",
-                    candle_key,
-                    signal["signal_rsi"],
-                    signal["signal_ema9"],
-                    signal["signal_ema20"],
-                    float(signal["signal_vol_val"].rstrip("x"))
-                    if str(signal["signal_vol_val"]).endswith("x")
-                    else 0.0,
-                    float(closed_signal["run_df"]),
-                    "TRIGGER" if signal["signal_triggered"] else "LOCK",
+                    "📊 INDICATORS | Spot=%.2f | LIVE RSI=%.2f EMA9=%.2f EMA20=%.2f | "
+                    "CLOSED=%s RSI=%.2f EMA9=%.2f EMA20=%.2f | VOL=%.2fx | "
+                    "DayH/L=%.2f/%.2f",
+                    float(processed["live_spot"]),
+                    float(live.get("rsi", 50.0)),
+                    float(live.get("ema9", 0.0)),
+                    float(live.get("ema20", 0.0)),
+                    str(current_candle),
+                    float(closed.get("rsi", 50.0)),
+                    float(closed.get("ema9", 0.0)),
+                    float(closed.get("ema20", 0.0)),
+                    float(vol.get("completed_candle_ratio", 0.0)),
+                    float(processed["live_day_high"]),
+                    float(processed["live_day_low"]),
                 )
 
-            logging.debug(
-                "LIVE INDICATORS | spot=%.2f RSI=%.2f EMA9=%.2f EMA20=%.2f "
-                "liveVol=%s dayHigh=%.2f dayLow=%.2f",
-                spot,
-                live_rsi,
-                live_ema9,
-                live_ema20,
-                live_volume_display,
-                intraday_high,
-                intraday_low,
-            )
+        except Exception as exc:
+            logging.exception("🔴 indicator_calc error: %s", exc)
 
-        except Exception as err:
-            logging.exception("🔴 Indicator engine error: %s", err)
-
-        time.sleep(1)
+        time.sleep(PUBLISH_INTERVAL_SEC)
 
 
 if __name__ == "__main__":
