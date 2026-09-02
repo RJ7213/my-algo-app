@@ -868,6 +868,44 @@ def calculate_indicators(raw: Dict[str, Any], now: datetime) -> Optional[Dict[st
     payload["futures_tick"] = raw.get("futures_tick")
     payload["live_futures_volume_5m"] = raw.get("live_futures_volume_5m")
 
+    # --------------------------------------------------------
+    # DOWNSTREAM FIELD COMPATIBILITY
+    # --------------------------------------------------------
+    # These are aliases of already-calculated technical data only.
+    # They do NOT create any strategy decision.
+    payload["rsi"] = round(live_rsi, 2)
+    payload["ema9"] = round(live_ema9, 2)
+    payload["ema20"] = round(live_ema20, 2)
+    payload["signal_rsi"] = round(closed_rsi, 2)
+    payload["signal_ema9"] = round(closed_ema9, 2)
+    payload["signal_ema20"] = round(closed_ema20, 2)
+    payload["intraday_high"] = round(intraday_high, 2)
+    payload["intraday_low"] = round(intraday_low, 2)
+
+    payload["signal_volume"] = volume.get("completed_candle_volume", 0.0)
+    payload["signal_volume_avg"] = volume.get("completed_candle_average_prior_20", 0.0)
+    payload["signal_volume_ratio"] = volume.get("completed_candle_ratio", 0.0)
+    payload["live_volume"] = volume.get("live_futures_volume_5m")
+    payload["live_volume_avg"] = volume.get("historical_average_volume", 0.0)
+    payload["live_volume_ratio"] = volume.get("live_volume_ratio", 0.0)
+    payload["signal_vol_status"] = volume.get("completed_volume_status")
+    payload["signal_rsi_status"] = "AVAILABLE" if closed_rsi is not None else "UNAVAILABLE"
+    payload["signal_ema_status"] = "AVAILABLE" if closed_ema9 is not None and closed_ema20 is not None else "UNAVAILABLE"
+
+    # Paper engine expects the latest completed candles as a list.
+    payload["completed_candles"] = payload["recent_completed_candles"]
+
+    # Paper engine/dashboard compatibility: expose the same structural
+    # level object already calculated above, without adding trade logic.
+    payload["level_engine"] = levels
+
+    # Direction-neutral runway data. CE/PE are kept separate so no
+    # directional choice is made by this processor.
+    payload["runway_ce"] = distances.get("ce_runway")
+    payload["runway_pe"] = distances.get("pe_runway")
+    payload["runway_status_ce"] = distances.get("ce_runway_status")
+    payload["runway_status_pe"] = distances.get("pe_runway_status")
+
     return json_safe(payload)
 
 
