@@ -775,9 +775,9 @@ def choose_setup(
         or ""
     )
 
-    ema9 = safe_float(ind.get("ema9"))
-    ema20 = safe_float(ind.get("ema20"))
-    rsi = safe_float(ind.get("rsi"))
+    ema9 = safe_float(ind.get("ema9"), ind.get("live_ema9"))
+    ema20 = safe_float(ind.get("ema20"), ind.get("live_ema20"))
+    rsi = safe_float(ind.get("rsi"), ind.get("live_rsi"))
 
     # The indicator engine publishes live indicators plus closed-candle copies.
     signal_ema9 = safe_float(ind.get("signal_ema9"), ema9)
@@ -830,15 +830,64 @@ def choose_setup(
                 setup_reason = breakout_reason
 
     if not option_type:
+        support_level = None
+        resistance_level = None
+        for lvl in levels:
+            value = safe_float(lvl.get("level"))
+            if value is None:
+                continue
+            if value < spot and (support_level is None or value > support_level):
+                support_level = value
+            if value > spot and (resistance_level is None or value < resistance_level):
+                resistance_level = value
+
+        day_high = safe_float(ind.get("intraday_high"), spot) or spot
+        day_low = safe_float(ind.get("intraday_low"), spot) or spot
+        ce_runway = max(0.0, day_high - spot)
+        pe_runway = max(0.0, spot - day_low)
+        display_runway = max(ce_runway, pe_runway)
+        no_setup_volume_ratio = safe_float(
+            ind.get("signal_volume_ratio"),
+            safe_float(ind.get("volume_ratio"), 0.0),
+        ) or 0.0
         return {
             "ready": False,
             "reason": "No valid Major Rejection / Pullback / Breakout setup",
             "setup": "NONE",
+            "trade_type": "NONE",
+            "option_type": "NONE",
+            "option_strike": nearest_strike(spot),
             "candle_time": candle_time,
             "candle": candle,
             "rsi": signal_rsi,
             "ema9": signal_ema9,
             "ema20": signal_ema20,
+            "rsi_pass": False,
+            "ema_pass": False,
+            "volume_ratio": no_setup_volume_ratio,
+            "volume_pass": no_setup_volume_ratio >= VOLUME_PASS_RATIO,
+            "runway": display_runway,
+            "runway_pass": display_runway >= RUNWAY_MIN,
+            "ce_runway": ce_runway,
+            "pe_runway": pe_runway,
+            "candle_range": candle.get("range", 0.0),
+            "candle_body": candle.get("body", 0.0),
+            "upper_wick": candle.get("upper_wick", 0.0),
+            "lower_wick": candle.get("lower_wick", 0.0),
+            "opposite_wick": 0.0,
+            "wick_pass": False,
+            "candle_size_pass": CANDLE_MIN <= candle.get("range", 0.0) <= CANDLE_MAX,
+            "structure_pass": False,
+            "oi_state": "NO_DATA",
+            "oi_reason": "No setup / awaiting structure",
+            "flow_state": "NO_DATA",
+            "flow_reason": "No setup / awaiting structure",
+            "failed_gates": ["SETUP"],
+            "support": support_level,
+            "resistance": resistance_level,
+            "spot": spot,
+            "day_high": day_high,
+            "day_low": day_low,
         }
 
     # -------------------------
@@ -896,7 +945,7 @@ def choose_setup(
     # -------------------------
     volume_ratio = safe_float(
         ind.get("signal_volume_ratio"),
-        0.0,
+        safe_float(ind.get("volume_ratio"), 0.0),
     ) or 0.0
     volume_pass = volume_ratio >= VOLUME_PASS_RATIO
 
