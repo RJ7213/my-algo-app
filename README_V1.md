@@ -17,3 +17,9 @@ This package restores the data flow needed by the existing paper strategy withou
 
 ## No live orders
 `paper_engine.py` remains PAPER ONLY. No live order placement is added.
+
+
+## v3 hotfix
+- `data_worker.py` now publishes `market_status` and `worker_status`; WebSocket connectivity no longer masquerades as market-open status.
+- `paper_engine.py` keeps a complete latest decision/gate snapshot visible after market close, while blocking new entries/exits.
+- `Trading app.py` shows CLOSED when the exchange session is closed even if WebSocket remains connected.
