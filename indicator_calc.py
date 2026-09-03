@@ -428,6 +428,104 @@ def candle_metrics(row):
 
 
 # ============================================================
+# LEVEL ENGINE / STRUCTURE SNAPSHOT
+# ============================================================
+
+def build_completed_candles(df):
+    """Publish completed candles in the schema expected by paper_engine."""
+    if df.empty or len(df) < 2:
+        return []
+
+    completed = df.iloc[:-1].tail(250)
+    out = []
+    for _, row in completed.iterrows():
+        out.append({
+            "date": str(row["datetime"]),
+            "datetime": str(row["datetime"]),
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "volume": float(row["volume"] or 0.0),
+        })
+    return out
+
+
+def build_level_engine(df, spot, day_high, day_low):
+    """
+    Build the major-level list consumed by paper_engine.
+
+    Sources are deliberately limited to observable market structure:
+    day high/low, recent swing highs/lows, and 100-point psychological
+    levels. EMA is never used as a support/resistance substitute.
+    """
+    if df.empty or spot is None:
+        return {"levels": [], "support": None, "resistance": None}
+
+    levels = []
+
+    def add(level, name, source, strength):
+        try:
+            value = float(level)
+        except (TypeError, ValueError):
+            return
+        if value <= 0:
+            return
+        levels.append({
+            "level": round(value, 2),
+            "name": name,
+            "source": source,
+            "strength": float(strength),
+        })
+
+    # Day extremes are genuine market levels.
+    if day_low is not None:
+        add(day_low, "Day Low", "day_range", 5.0)
+    if day_high is not None:
+        add(day_high, "Day High", "day_range", 5.0)
+
+    # Recent 3-candle swing points. Keep the latest 120 completed candles.
+    completed = df.iloc[:-1].tail(120).reset_index(drop=True)
+    if len(completed) >= 3:
+        for i in range(1, len(completed) - 1):
+            prev_r = completed.iloc[i - 1]
+            cur = completed.iloc[i]
+            next_r = completed.iloc[i + 1]
+            if float(cur["high"]) >= float(prev_r["high"]) and float(cur["high"]) >= float(next_r["high"]):
+                add(cur["high"], "Swing High", "swing_high", 3.0)
+            if float(cur["low"]) <= float(prev_r["low"]) and float(cur["low"]) <= float(next_r["low"]):
+                add(cur["low"], "Swing Low", "swing_low", 3.0)
+
+    # Psychological levels remain available for rejection context.
+    center = round(float(spot) / PSYCHOLOGICAL_STEP) * PSYCHOLOGICAL_STEP
+    for n in range(-6, 7):
+        level = center + n * PSYCHOLOGICAL_STEP
+        if abs(level - float(spot)) <= 600:
+            add(level, "Psychological Level", "psychological", 1.0)
+
+    # Deduplicate, keeping the strongest source at the same price.
+    dedup = {}
+    for item in levels:
+        key = round(item["level"], 2)
+        old = dedup.get(key)
+        if old is None or item["strength"] > old["strength"]:
+            dedup[key] = item
+    levels = list(dedup.values())
+
+    below = [x for x in levels if x["level"] < float(spot)]
+    above = [x for x in levels if x["level"] > float(spot)]
+    below.sort(key=lambda x: abs(float(spot) - x["level"]))
+    above.sort(key=lambda x: abs(x["level"] - float(spot)))
+
+    return {
+        "levels": levels,
+        "support": below[0]["level"] if below else None,
+        "resistance": above[0]["level"] if above else None,
+        "support_level": below[0] if below else None,
+        "resistance_level": above[0] if above else None,
+    }
+
+# ============================================================
 # LIVE INDICATOR SNAPSHOT
 # ============================================================
 
@@ -514,6 +612,7 @@ def calculate_closed_candle_signal(
     spot,
     day_high,
     day_low,
+    volume_df=None,
 ):
     """
     ALL entry logic is based on the completed candle (-2).
@@ -750,22 +849,10 @@ def calculate_closed_candle_signal(
     # against the previous 20 completed candles.
     # --------------------------------------------------------
 
-    volume_window = df[
-        "volume"
-    ].iloc[
-        -22:-2
-    ]
-
-    current_volume = float(
-        df["volume"].iloc[-2]
-        or 0.0
-    )
-
-    vol_avg = float(
-        volume_window.mean()
-        if not volume_window.empty
-        else 0.0
-    )
+    volume_source = volume_df if volume_df is not None and len(volume_df) >= 22 else df
+    volume_window = volume_source["volume"].iloc[-22:-2]
+    current_volume = float(volume_source["volume"].iloc[-2] or 0.0)
+    vol_avg = float(volume_window.mean() if not volume_window.empty else 0.0)
 
     if vol_avg > 0:
 
@@ -1074,6 +1161,17 @@ def start_indicator_engine():
                         f"{len(df)}/22",
                     "engine_status": "WAITING",
                     "candle_count": len(df),
+                    "rsi": None,
+                    "ema9": None,
+                    "ema20": None,
+                    "signal_rsi": None,
+                    "signal_ema9": None,
+                    "signal_ema20": None,
+                    "signal_volume_ratio": 0.0,
+                    "completed_candles": [],
+                    "level_engine": {"levels": [], "support": None, "resistance": None},
+                    "support": None,
+                    "resistance": None,
                     "calculated_at":
                         now_ist().isoformat(),
                 }
@@ -1110,6 +1208,9 @@ def start_indicator_engine():
                 )
             )
 
+            future_df = build_dataframe(raw.get("future_candles", []))
+            level_engine = build_level_engine(df, spot, day_high, day_low)
+
             # ----------------------------------------------------
             # LIVE INDICATOR SNAPSHOT
             # ----------------------------------------------------
@@ -1143,6 +1244,7 @@ def start_indicator_engine():
                     spot,
                     day_high,
                     day_low,
+                    future_df,
                 )
             )
 
@@ -1217,6 +1319,19 @@ def start_indicator_engine():
                 # ------------------------------
 
                 **signal,
+
+                # Compatibility fields consumed by paper_engine.
+                "rsi": signal.get("rsi_v"),
+                "ema9": signal.get("ema9"),
+                "ema20": signal.get("ema20"),
+                "signal_rsi": signal.get("rsi_v"),
+                "signal_ema9": signal.get("ema9"),
+                "signal_ema20": signal.get("ema20"),
+                "signal_volume_ratio": signal.get("volume_ratio"),
+                "completed_candles": build_completed_candles(df),
+                "level_engine": level_engine,
+                "support": level_engine.get("support"),
+                "resistance": level_engine.get("resistance"),
 
                 # ------------------------------
                 # Explicit candle status
