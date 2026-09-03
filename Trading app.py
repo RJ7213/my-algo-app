@@ -4,9 +4,13 @@ from datetime import datetime, timezone, timedelta
 
 import streamlit as st
 
+
 # ============================================================
 # NIFTY PAPER - FINAL MOBILE DASHBOARD
-# READ-ONLY: no strategy calculations, no orders.
+# READ-ONLY
+# No strategy calculations
+# No orders
+# No dashboard-side trading decisions
 # ============================================================
 
 st.set_page_config(
@@ -18,6 +22,7 @@ st.set_page_config(
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
+
 FILES = {
     "raw": "data_raw.json",
     "ind": "processed_indicators.json",
@@ -26,13 +31,17 @@ FILES = {
     "journal": "trade_history.json",
 }
 
-# ------------------------------------------------------------
+
+# ============================================================
 # MOBILE UI
-# ------------------------------------------------------------
+# ============================================================
+
 st.markdown(
     """
 <style>
-#MainMenu, footer, header {visibility:hidden;}
+#MainMenu, footer, header {
+    visibility:hidden;
+}
 
 [data-testid="stAppViewContainer"] {
     background:#f4f7f9;
@@ -67,8 +76,13 @@ st.markdown(
     margin:3px 0;
 }
 
-.grid2 { grid-template-columns:repeat(2,minmax(0,1fr)); }
-.grid3 { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.grid2 {
+    grid-template-columns:repeat(2,minmax(0,1fr));
+}
+
+.grid3 {
+    grid-template-columns:repeat(3,minmax(0,1fr));
+}
 
 .card {
     background:#ffffff;
@@ -104,7 +118,9 @@ st.markdown(
     text-overflow:ellipsis;
 }
 
-.main .val { font-size:19px; }
+.main .val {
+    font-size:19px;
+}
 
 .sub {
     font-size:7px;
@@ -155,10 +171,21 @@ st.markdown(
     text-overflow:ellipsis;
 }
 
-.green { color:#159447 !important; }
-.red { color:#dc3545 !important; }
-.yellow { color:#b77900 !important; }
-.muted { color:#64748b !important; }
+.green {
+    color:#159447 !important;
+}
+
+.red {
+    color:#dc3545 !important;
+}
+
+.yellow {
+    color:#b77900 !important;
+}
+
+.muted {
+    color:#64748b !important;
+}
 
 .big {
     font-size:21px;
@@ -209,15 +236,19 @@ st.markdown(
     .main .block-container {
         padding:.25rem .28rem .75rem;
     }
+
     .grid2, .grid3 {
         gap:4px;
     }
+
     .card {
         padding:6px 7px;
     }
+
     .val {
         font-size:14px;
     }
+
     .main .val {
         font-size:18px;
     }
@@ -228,14 +259,17 @@ st.markdown(
 )
 
 
-# ------------------------------------------------------------
+# ============================================================
 # SAFE HELPERS
-# ------------------------------------------------------------
+# ============================================================
+
 def read_json(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+
         return data if isinstance(data, dict) else {}
+
     except Exception:
         return {}
 
@@ -249,20 +283,47 @@ def lst(value):
 
 
 def val(obj, *keys, default=None):
+    """
+    Return first non-empty/non-None value from dictionary.
+
+    Supports fallback key names.
+    """
     if not isinstance(obj, dict):
         return default
+
     for key in keys:
-        if key in obj and obj[key] is not None:
-            return obj[key]
+        if key in obj:
+            value = obj[key]
+
+            if value is not None and value != "":
+                return value
+
+    return default
+
+
+def first_value(*values, default=None):
+    """
+    Generic fallback helper.
+
+    Example:
+        first_value(ind_value, raw_value, paper_value)
+    """
+    for value in values:
+        if value is not None and value != "":
+            return value
+
     return default
 
 
 def number(value, decimals=2, fallback="—"):
     try:
         x = float(value)
+
         if not math.isfinite(x):
             return fallback
+
         return f"{x:,.{decimals}f}"
+
     except (TypeError, ValueError):
         return fallback
 
@@ -270,9 +331,12 @@ def number(value, decimals=2, fallback="—"):
 def money(value):
     try:
         x = float(value)
+
         if not math.isfinite(x):
             return "—"
+
         return f"₹{x:,.2f}"
+
     except (TypeError, ValueError):
         return "—"
 
@@ -280,9 +344,12 @@ def money(value):
 def percent(value):
     try:
         x = float(value)
+
         if not math.isfinite(x):
             return "—"
+
         return f"{x:.1f}%"
+
     except (TypeError, ValueError):
         return "—"
 
@@ -290,6 +357,7 @@ def percent(value):
 def safe_float(value):
     try:
         return float(value)
+
     except (TypeError, ValueError):
         return 0.0
 
@@ -297,11 +365,13 @@ def safe_float(value):
 def fmt_text(value, fallback="—"):
     if value is None or value == "":
         return fallback
+
     return str(value)
 
 
 def card_html(label, value, sub="", main=False):
     cls = "card main" if main else "card"
+
     return (
         f'<div class="{cls}">'
         f'<div class="lbl">{label}</div>'
@@ -313,15 +383,22 @@ def card_html(label, value, sub="", main=False):
 
 def grid(cards, cols=3):
     cls = "grid3" if cols == 3 else "grid2"
-    st.markdown(f'<div class="{cls}">{"".join(cards)}</div>', unsafe_allow_html=True)
+
+    st.markdown(
+        f'<div class="{cls}">{"".join(cards)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def status_html(name, status, detail=""):
     text = str(status if status is not None else "—").upper()
+
     if text in ("PASS", "TRUE", "YES", "OK", "READY"):
         cls = "green"
+
     elif text in ("FAIL", "FALSE", "NO", "ERROR"):
         cls = "red"
+
     else:
         cls = "yellow"
 
@@ -335,52 +412,223 @@ def status_html(name, status, detail=""):
 
 
 def section(title):
-    st.markdown(f'<div class="section">{title}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="section">{title}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def load_all():
-    return {name: read_json(path) for name, path in FILES.items()}
+    return {
+        name: read_json(path)
+        for name, path in FILES.items()
+    }
 
 
 def get_active_trade(paper, journal):
     active = paper.get("active_trade")
+
     if isinstance(active, dict):
         return active
 
     for trade in lst(journal.get("trades")):
-        if isinstance(trade, dict) and str(trade.get("status", "")).upper() == "ACTIVE":
+
+        if (
+            isinstance(trade, dict)
+            and str(trade.get("status", "")).upper() == "ACTIVE"
+        ):
             return trade
+
     return None
 
 
-# ------------------------------------------------------------
+# ============================================================
+# CROSS-SOURCE FALLBACK HELPERS
+# ============================================================
+
+def get_spot(raw, ind, paper):
+    return first_value(
+        val(raw, "live_spot", "spot", "nifty_spot"),
+        val(ind, "live_spot", "spot", "nifty_spot"),
+        val(paper, "live_spot", "spot", "nifty_spot"),
+        default=None,
+    )
+
+
+def get_day_high(raw, ind, paper):
+    """
+    Priority:
+        indicator calculated value
+        raw live value
+        paper value
+    """
+
+    level_engine = d(ind.get("level_engine"))
+
+    return first_value(
+        val(ind, "intraday_high"),
+        val(ind, "day_high"),
+        val(ind, "live_day_high"),
+        val(level_engine, "day_high"),
+        val(raw, "live_day_high"),
+        val(raw, "day_high"),
+        val(paper, "live_day_high"),
+        val(paper, "day_high"),
+        default=None,
+    )
+
+
+def get_day_low(raw, ind, paper):
+    level_engine = d(ind.get("level_engine"))
+
+    return first_value(
+        val(ind, "intraday_low"),
+        val(ind, "day_low"),
+        val(ind, "live_day_low"),
+        val(level_engine, "day_low"),
+        val(raw, "live_day_low"),
+        val(raw, "day_low"),
+        val(paper, "live_day_low"),
+        val(paper, "day_low"),
+        default=None,
+    )
+
+
+def get_rsi(raw, ind, paper):
+    return first_value(
+        val(ind, "live_rsi"),
+        val(ind, "rsi"),
+        val(ind, "rsi_live"),
+        val(raw, "live_rsi"),
+        val(raw, "rsi"),
+        val(paper, "live_rsi"),
+        val(paper, "rsi"),
+        default=None,
+    )
+
+
+def get_ema9(raw, ind, paper):
+    return first_value(
+        val(ind, "live_ema9"),
+        val(ind, "ema9"),
+        val(ind, "ema_9"),
+        val(ind, "ema9_live"),
+        val(raw, "live_ema9"),
+        val(raw, "ema9"),
+        val(paper, "live_ema9"),
+        val(paper, "ema9"),
+        default=None,
+    )
+
+
+def get_ema20(raw, ind, paper):
+    return first_value(
+        val(ind, "live_ema20"),
+        val(ind, "ema20"),
+        val(ind, "ema_20"),
+        val(ind, "ema20_live"),
+        val(raw, "live_ema20"),
+        val(raw, "ema20"),
+        val(paper, "live_ema20"),
+        val(paper, "ema20"),
+        default=None,
+    )
+
+
+def get_volume_ratio(raw, ind, paper):
+    return first_value(
+        val(ind, "live_volume_ratio"),
+        val(ind, "volume_ratio"),
+        val(ind, "vol_ratio"),
+        val(ind, "live_vol_ratio"),
+        val(raw, "live_volume_ratio"),
+        val(raw, "volume_ratio"),
+        val(paper, "live_volume_ratio"),
+        val(paper, "volume_ratio"),
+        default=None,
+    )
+
+
+def get_support(ind, raw, paper):
+    level_engine = d(ind.get("level_engine"))
+
+    support = d(level_engine.get("nearest_support"))
+
+    result = first_value(
+        val(support, "level"),
+        val(ind, "nearest_support"),
+        val(ind, "support"),
+        val(raw, "nearest_support"),
+        val(raw, "support"),
+        val(paper, "nearest_support"),
+        val(paper, "support"),
+        default=None,
+    )
+
+    return result
+
+
+def get_resistance(ind, raw, paper):
+    level_engine = d(ind.get("level_engine"))
+
+    resistance = d(level_engine.get("nearest_resistance"))
+
+    result = first_value(
+        val(resistance, "level"),
+        val(ind, "nearest_resistance"),
+        val(ind, "resistance"),
+        val(raw, "nearest_resistance"),
+        val(raw, "resistance"),
+        val(paper, "nearest_resistance"),
+        val(paper, "resistance"),
+        default=None,
+    )
+
+    return result
+
+
+def get_futures_tick(raw, ind, paper):
+    return first_value(
+        raw.get("futures_tick"),
+        ind.get("futures_tick"),
+        paper.get("futures_tick"),
+        default={},
+    )
+
+
+# ============================================================
 # LAST GOOD SNAPSHOT
-# Keeps the last valid display in the current dashboard
-# session when market closes or a file is briefly unavailable.
-# The dashboard never writes to the engine files.
-# ------------------------------------------------------------
+# ============================================================
+
 def keep_last_good(current):
+
     if "last_good_dashboard" not in st.session_state:
         st.session_state["last_good_dashboard"] = {}
 
     cache = st.session_state["last_good_dashboard"]
 
     for name, value in current.items():
+
         if isinstance(value, dict) and value:
-            # A dict with at least one useful key is considered valid.
             cache[name] = value
 
     merged = {}
+
     for name in FILES:
-        merged[name] = cache.get(name, current.get(name, {}))
+        merged[name] = cache.get(
+            name,
+            current.get(name, {})
+        )
 
     return merged
 
 
-# ------------------------------------------------------------
+# ============================================================
 # RENDER
-# ------------------------------------------------------------
+# ============================================================
+
 def render_dashboard():
+
     data = keep_last_good(load_all())
 
     raw = d(data["raw"])
@@ -392,40 +640,113 @@ def render_dashboard():
     decision = d(paper.get("decision"))
     active = get_active_trade(paper, journal)
 
-    spot = val(raw, "live_spot", default=val(paper, "live_spot"))
+    # ========================================================
+    # UNIVERSAL FALLBACK DATA
+    # ========================================================
+
+    spot = get_spot(raw, ind, paper)
+
+    day_high = get_day_high(raw, ind, paper)
+    day_low = get_day_low(raw, ind, paper)
+
+    rsi = get_rsi(raw, ind, paper)
+    ema9 = get_ema9(raw, ind, paper)
+    ema20 = get_ema20(raw, ind, paper)
+
+    volume_ratio = get_volume_ratio(
+        raw,
+        ind,
+        paper,
+    )
+
+    support_value = get_support(
+        ind,
+        raw,
+        paper,
+    )
+
+    resistance_value = get_resistance(
+        ind,
+        raw,
+        paper,
+    )
+
+    futures = d(
+        get_futures_tick(
+            raw,
+            ind,
+            paper,
+        )
+    )
+
+    # ========================================================
+    # MARKET STATUS
+    # ========================================================
 
     market = str(
-        val(
-            raw,
-            "market_status",
-            default=val(paper, "market_status", default="UNKNOWN"),
+        first_value(
+            val(raw, "market_status"),
+            val(ind, "market_status"),
+            val(paper, "market_status"),
+            default="UNKNOWN",
         )
     ).upper()
 
-    # IMPORTANT:
-    # CLOSED means show LAST DATA, not blank/off.
     if market == "CLOSED":
+
         status_text = "🟡 CLOSED"
         status_class = "yellow"
-    else:
-        connected = bool(raw.get("websocket_connected"))
-        status_text = "🟢 LIVE" if connected else "🔴 OFF"
-        status_class = "green" if connected else "red"
 
-    last_update = val(
-        raw,
-        "last_update",
-        default=val(ind, "calculated_at_ist", default=paper.get("last_update_ist")),
+    else:
+
+        connected_value = first_value(
+            raw.get("websocket_connected"),
+            ind.get("websocket_connected"),
+            paper.get("websocket_connected"),
+            default=False,
+        )
+
+        connected = bool(connected_value)
+
+        status_text = (
+            "🟢 LIVE"
+            if connected
+            else "🔴 OFF"
+        )
+
+        status_class = (
+            "green"
+            if connected
+            else "red"
+        )
+
+    # ========================================================
+    # LAST UPDATE
+    # ========================================================
+
+    last_update = first_value(
+        val(raw, "last_update"),
+        val(ind, "calculated_at_ist"),
+        val(ind, "last_update"),
+        val(paper, "last_update_ist"),
+        val(paper, "last_update"),
+        default=None,
     )
 
-    # ---------------- HEADER ----------------
+    # ========================================================
+    # HEADER
+    # ========================================================
+
     st.markdown(
         f"""
         <div class="header">
             <div>
                 <div class="header-title">📈 NIFTY PAPER</div>
-                <div class="header-sub">Paper only · Read-only</div>
+                <div class="header-sub">
+                    Paper only · Read-only
+                </div>
             </div>
+
             <div class="header-status {status_class}">
                 {status_text}<br>
                 <span class="header-sub">{market}</span>
@@ -435,18 +756,29 @@ def render_dashboard():
         unsafe_allow_html=True,
     )
 
-    tabs = st.tabs(["📊 MARKET", "🎯 TRADE", "📒 HISTORY"])
+    tabs = st.tabs(
+        [
+            "📊 MARKET",
+            "🎯 TRADE",
+            "📒 HISTORY",
+        ]
+    )
 
     # ========================================================
     # MARKET
     # ========================================================
+
     with tabs[0]:
-        day_high = val(raw, "live_day_high", default=ind.get("intraday_high"))
-        day_low = val(raw, "live_day_low", default=ind.get("intraday_low"))
 
         grid(
             [
-                card_html("NIFTY LIVE", number(spot, 2), "last market value", True),
+                card_html(
+                    "NIFTY LIVE",
+                    number(spot, 2),
+                    "last market value",
+                    True,
+                ),
+
                 card_html(
                     "DAY HIGH / LOW",
                     f"{number(day_high,0)} / {number(day_low,0)}",
@@ -459,158 +791,535 @@ def render_dashboard():
 
         grid(
             [
-                card_html("RSI", number(val(ind, "live_rsi", "rsi"))),
-                card_html("EMA 9", number(val(ind, "live_ema9", "ema9"), 0)),
-                card_html("EMA 20", number(val(ind, "live_ema20", "ema20"), 0)),
+                card_html(
+                    "RSI",
+                    number(rsi),
+                ),
+
+                card_html(
+                    "EMA 9",
+                    number(ema9, 0),
+                ),
+
+                card_html(
+                    "EMA 20",
+                    number(ema20, 0),
+                ),
             ],
             3,
         )
-
-        level_engine = d(ind.get("level_engine"))
-        support = d(level_engine.get("nearest_support"))
-        resistance = d(level_engine.get("nearest_resistance"))
 
         grid(
             [
-                card_html("VOLUME", f'{number(ind.get("live_volume_ratio"))}x'),
-                card_html("SUPPORT", number(support.get("level"), 0)),
-                card_html("RESISTANCE", number(resistance.get("level"), 0)),
+                card_html(
+                    "VOLUME",
+                    (
+                        f"{number(volume_ratio)}x"
+                        if volume_ratio is not None
+                        else "—"
+                    ),
+                ),
+
+                card_html(
+                    "SUPPORT",
+                    number(support_value, 0),
+                ),
+
+                card_html(
+                    "RESISTANCE",
+                    number(resistance_value, 0),
+                ),
             ],
             3,
         )
+
+        # ----------------------------------------------------
+        # CE / PE FLOW
+        # ----------------------------------------------------
 
         section("CE / PE FLOW")
 
-        order_flow = d(ms.get("order_flow"))
-        options_flow = d(order_flow.get("options"))
-        ce = d(options_flow.get("ce"))
-        pe = d(options_flow.get("pe"))
+        order_flow = d(
+            ms.get("order_flow")
+        )
+
+        options_flow = d(
+            order_flow.get("options")
+        )
+
+        ce = d(
+            options_flow.get("ce")
+        )
+
+        pe = d(
+            options_flow.get("pe")
+        )
 
         grid(
             [
-                status_html("CE FLOW", ce.get("state"), "option flow"),
-                status_html("PE FLOW", pe.get("state"), "option flow"),
+                status_html(
+                    "CE FLOW",
+                    ce.get("state"),
+                    "option flow",
+                ),
+
+                status_html(
+                    "PE FLOW",
+                    pe.get("state"),
+                    "option flow",
+                ),
             ],
             2,
         )
 
-        section("OI SUPPORT / RESISTANCE")
-        oi_sr = d(ms.get("oi_support_resistance"))
+        # ----------------------------------------------------
+        # OI SUPPORT / RESISTANCE
+        # ----------------------------------------------------
+
+        section(
+            "OI SUPPORT / RESISTANCE"
+        )
+
+        oi_sr = d(
+            ms.get(
+                "oi_support_resistance"
+            )
+        )
+
+        oi_support = first_value(
+            val(oi_sr, "support"),
+            val(ms, "oi_support"),
+            val(ind, "oi_support"),
+            val(raw, "oi_support"),
+            default=None,
+        )
+
+        oi_resistance = first_value(
+            val(oi_sr, "resistance"),
+            val(ms, "oi_resistance"),
+            val(ind, "oi_resistance"),
+            val(raw, "oi_resistance"),
+            default=None,
+        )
 
         grid(
             [
-                card_html("OI SUPPORT", number(oi_sr.get("support"), 0)),
-                card_html("OI RESISTANCE", number(oi_sr.get("resistance"), 0)),
+                card_html(
+                    "OI SUPPORT",
+                    number(oi_support, 0),
+                ),
+
+                card_html(
+                    "OI RESISTANCE",
+                    number(oi_resistance, 0),
+                ),
             ],
             2,
         )
 
-        section("FUTURES BUY / SELL")
-        futures = d(raw.get("futures_tick"))
+        # ----------------------------------------------------
+        # FUTURES BUY / SELL
+        # ----------------------------------------------------
+
+        section(
+            "FUTURES BUY / SELL"
+        )
+
+        buy_quantity = first_value(
+            val(
+                futures,
+                "total_buy_quantity",
+            ),
+            val(
+                futures,
+                "buy_quantity",
+            ),
+            val(
+                raw,
+                "futures_buy_quantity",
+            ),
+            val(
+                ms,
+                "futures_buy_quantity",
+            ),
+            default=None,
+        )
+
+        sell_quantity = first_value(
+            val(
+                futures,
+                "total_sell_quantity",
+            ),
+            val(
+                futures,
+                "sell_quantity",
+            ),
+            val(
+                raw,
+                "futures_sell_quantity",
+            ),
+            val(
+                ms,
+                "futures_sell_quantity",
+            ),
+            default=None,
+        )
 
         grid(
             [
-                card_html("BUY QTY", number(futures.get("total_buy_quantity"), 0)),
-                card_html("SELL QTY", number(futures.get("total_sell_quantity"), 0)),
+                card_html(
+                    "BUY QTY",
+                    number(
+                        buy_quantity,
+                        0,
+                    ),
+                ),
+
+                card_html(
+                    "SELL QTY",
+                    number(
+                        sell_quantity,
+                        0,
+                    ),
+                ),
             ],
             2,
         )
 
         if market == "CLOSED":
+
             st.markdown(
-                f'<div class="last-data">Market closed · Last available data: {fmt_text(last_update)}</div>',
+                f"""
+                <div class="last-data">
+                    Market closed · Last available data:
+                    {fmt_text(last_update)}
+                </div>
+                """,
                 unsafe_allow_html=True,
             )
 
     # ========================================================
     # TRADE
     # ========================================================
+
     with tabs[1]:
-        setup = str(val(decision, "setup", default="NONE"))
-        trade_type = str(val(decision, "trade_type", default="—"))
-        ready = bool(decision.get("ready"))
-        decision_class = "green" if ready else "yellow"
-        icon = "🟢" if ready else "🟡"
-        strike = number(decision.get("option_strike"), 0)
+
+        setup = str(
+            val(
+                decision,
+                "setup",
+                default="NONE",
+            )
+        )
+
+        trade_type = str(
+            val(
+                decision,
+                "trade_type",
+                default="—",
+            )
+        )
+
+        ready = bool(
+            decision.get("ready")
+        )
+
+        decision_class = (
+            "green"
+            if ready
+            else "yellow"
+        )
+
+        icon = (
+            "🟢"
+            if ready
+            else "🟡"
+        )
+
+        strike = number(
+            decision.get(
+                "option_strike"
+            ),
+            0,
+        )
 
         st.markdown(
-            f'<div class="trade">'
-            f'<div class="lbl">CURRENT DECISION</div>'
-            f'<div class="big {decision_class}">{icon} {setup}</div>'
-            f'<div style="font-size:10px;font-weight:900;color:#334155;margin-top:2px">'
-            f'{trade_type} · Strike {strike}</div>'
-            f'</div>',
+            f"""
+            <div class="trade">
+                <div class="lbl">
+                    CURRENT DECISION
+                </div>
+
+                <div class="big {decision_class}">
+                    {icon} {setup}
+                </div>
+
+                <div style="
+                    font-size:10px;
+                    font-weight:900;
+                    color:#334155;
+                    margin-top:2px
+                ">
+                    {trade_type} · Strike {strike}
+                </div>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
-        reason = val(
-            decision,
-            "reason",
-            default=ind.get("algo_reason", "Waiting for setup…"),
+        reason = first_value(
+            val(
+                decision,
+                "reason",
+            ),
+            val(
+                ind,
+                "algo_reason",
+            ),
+            val(
+                ind,
+                "reason",
+            ),
+            default="Waiting for setup…",
         )
-        st.markdown(f'<div class="reason">{fmt_text(reason)}</div>', unsafe_allow_html=True)
+
+        st.markdown(
+            f'<div class="reason">{fmt_text(reason)}</div>',
+            unsafe_allow_html=True,
+        )
 
         section("STRATEGY GATES")
 
+        # ----------------------------------------------------
+        # SIGNAL RSI
+        # ----------------------------------------------------
+
+        signal_rsi = first_value(
+            val(decision, "rsi"),
+            val(ind, "signal_rsi"),
+            val(ind, "rsi"),
+            default=None,
+        )
+
+        # ----------------------------------------------------
+        # SIGNAL EMA
+        # ----------------------------------------------------
+
+        signal_ema9 = first_value(
+            val(decision, "ema9"),
+            val(ind, "signal_ema9"),
+            val(ind, "ema9"),
+            default=None,
+        )
+
+        signal_ema20 = first_value(
+            val(decision, "ema20"),
+            val(ind, "signal_ema20"),
+            val(ind, "ema20"),
+            default=None,
+        )
+
+        # ----------------------------------------------------
+        # SIGNAL VOLUME
+        # ----------------------------------------------------
+
+        signal_volume = first_value(
+            val(
+                decision,
+                "volume_ratio",
+                "signal_volume_ratio",
+            ),
+            val(
+                ind,
+                "signal_volume_ratio",
+            ),
+            val(
+                ind,
+                "volume_ratio",
+            ),
+            default=None,
+        )
+
         gate_items = [
+
             (
                 "RSI",
-                val(decision, "rsi_pass", default=ind.get("signal_rsi_status")),
-                f'RSI {number(val(decision, "rsi", default=ind.get("signal_rsi")))}',
+
+                first_value(
+                    val(
+                        decision,
+                        "rsi_pass",
+                    ),
+                    val(
+                        ind,
+                        "signal_rsi_status",
+                    ),
+                    default=None,
+                ),
+
+                f"RSI {number(signal_rsi)}",
             ),
+
             (
                 "EMA",
-                val(decision, "ema_pass", default=ind.get("signal_ema_status")),
-                f'9 {number(ind.get("signal_ema9"),0)} · 20 {number(ind.get("signal_ema20"),0)}',
+
+                first_value(
+                    val(
+                        decision,
+                        "ema_pass",
+                    ),
+                    val(
+                        ind,
+                        "signal_ema_status",
+                    ),
+                    default=None,
+                ),
+
+                f"9 {number(signal_ema9,0)} · "
+                f"20 {number(signal_ema20,0)}",
             ),
+
             (
                 "VOLUME",
-                val(decision, "volume_pass", default=ind.get("signal_vol_status")),
-                f'{number(ind.get("signal_volume_ratio"))}x · min 1.20x',
+
+                first_value(
+                    val(
+                        decision,
+                        "volume_pass",
+                    ),
+                    val(
+                        ind,
+                        "signal_vol_status",
+                    ),
+                    default=None,
+                ),
+
+                f"{number(signal_volume)}x · min 1.20x",
             ),
+
             (
                 "RUNWAY",
-                val(decision, "runway_pass", default=ind.get("runway_status")),
-                f'{fmt_text(val(decision, "runway", default="—"))} · min 15',
+
+                first_value(
+                    val(
+                        decision,
+                        "runway_pass",
+                    ),
+                    val(
+                        ind,
+                        "runway_status",
+                    ),
+                    default=None,
+                ),
+
+                f'{fmt_text(val(decision, "runway", default="—"))}'
+                " · min 15",
             ),
+
             (
                 "CANDLE",
-                decision.get("candle_size_pass"),
-                f'{number(decision.get("candle_range"))} pts · 12–25',
+
+                val(
+                    decision,
+                    "candle_size_pass",
+                ),
+
+                f'{number(decision.get("candle_range"))}'
+                " pts · 12–25",
             ),
+
             (
                 "WICK",
-                decision.get("wick_pass"),
-                f'{number(decision.get("opposite_wick"))} pts · max 5% body',
+
+                val(
+                    decision,
+                    "wick_pass",
+                ),
+
+                f'{number(decision.get("opposite_wick"))}'
+                " pts · max 5% body",
             ),
+
             (
                 "OI / FLOW",
-                decision.get("structure_pass"),
-                f'{fmt_text(val(decision, "oi_state", default="—"))} / '
+
+                val(
+                    decision,
+                    "structure_pass",
+                ),
+
+                f'{fmt_text(val(decision, "oi_state", default="—"))}'
+                " / "
                 f'{fmt_text(val(decision, "flow_state", default="—"))}',
             ),
         ]
 
-        # 2–3 gates per row, never one full-width gate.
-        for i in range(0, len(gate_items), 3):
-            batch = gate_items[i:i + 3]
+        # 3 gates per row
+        for i in range(
+            0,
+            len(gate_items),
+            3,
+        ):
+
+            batch = gate_items[
+                i:i + 3
+            ]
+
             st.markdown(
-                '<div class="grid3">' +
-                "".join(status_html(*item) for item in batch) +
+                '<div class="grid3">'
+                +
+                "".join(
+                    status_html(*item)
+                    for item in batch
+                )
+                +
                 '</div>',
                 unsafe_allow_html=True,
             )
 
-        section("TRADE & ACCOUNT")
+        # ----------------------------------------------------
+        # TRADE & ACCOUNT
+        # ----------------------------------------------------
 
-        if isinstance(active, dict):
+        section(
+            "TRADE & ACCOUNT"
+        )
+
+        if isinstance(
+            active,
+            dict,
+        ):
+
             grid(
                 [
-                    card_html("ACTIVE", active.get("option_symbol", "—")),
-                    card_html("QTY", number(active.get("qty"), 0)),
+                    card_html(
+                        "ACTIVE",
+                        active.get(
+                            "option_symbol",
+                            "—",
+                        ),
+                    ),
+
+                    card_html(
+                        "QTY",
+                        number(
+                            active.get(
+                                "qty"
+                            ),
+                            0,
+                        ),
+                    ),
+
                     card_html(
                         "ENTRY LTP",
-                        money(active.get("option_entry_ltp", active.get("entry"))),
+                        money(
+                            active.get(
+                                "option_entry_ltp",
+                                active.get(
+                                    "entry"
+                                ),
+                            )
+                        ),
                     ),
                 ],
                 3,
@@ -618,19 +1327,38 @@ def render_dashboard():
 
             grid(
                 [
-                    card_html("CURRENT LTP", money(active.get("current_option_ltp"))),
+                    card_html(
+                        "CURRENT LTP",
+                        money(
+                            active.get(
+                                "current_option_ltp"
+                            )
+                        ),
+                    ),
+
                     card_html(
                         "RUNNING P&L",
-                        money(active.get("running_pnl")),
+                        money(
+                            active.get(
+                                "running_pnl"
+                            )
+                        ),
                         "unrealized",
                     ),
+
                     card_html(
                         "WALLET",
                         money(
-                            val(
-                                paper,
-                                "wallet_balance",
-                                default=journal.get("wallet_balance"),
+                            first_value(
+                                val(
+                                    paper,
+                                    "wallet_balance",
+                                ),
+                                val(
+                                    journal,
+                                    "wallet_balance",
+                                ),
+                                default=None,
                             )
                         ),
                         "realized only",
@@ -644,10 +1372,16 @@ def render_dashboard():
                     card_html(
                         "REALIZED P&L",
                         money(
-                            val(
-                                paper,
-                                "realized_pnl",
-                                default=journal.get("realized_pnl"),
+                            first_value(
+                                val(
+                                    paper,
+                                    "realized_pnl",
+                                ),
+                                val(
+                                    journal,
+                                    "realized_pnl",
+                                ),
+                                default=None,
                             )
                         ),
                         "closed trades",
@@ -655,17 +1389,30 @@ def render_dashboard():
                 ],
                 2,
             )
+
         else:
+
             grid(
                 [
-                    card_html("ACTIVE TRADE", "NONE", "waiting"),
+                    card_html(
+                        "ACTIVE TRADE",
+                        "NONE",
+                        "waiting",
+                    ),
+
                     card_html(
                         "WALLET",
                         money(
-                            val(
-                                paper,
-                                "wallet_balance",
-                                default=journal.get("wallet_balance"),
+                            first_value(
+                                val(
+                                    paper,
+                                    "wallet_balance",
+                                ),
+                                val(
+                                    journal,
+                                    "wallet_balance",
+                                ),
+                                default=None,
                             )
                         ),
                         "realized only",
@@ -673,15 +1420,22 @@ def render_dashboard():
                 ],
                 2,
             )
+
             grid(
                 [
                     card_html(
                         "REALIZED P&L",
                         money(
-                            val(
-                                paper,
-                                "realized_pnl",
-                                default=journal.get("realized_pnl"),
+                            first_value(
+                                val(
+                                    paper,
+                                    "realized_pnl",
+                                ),
+                                val(
+                                    journal,
+                                    "realized_pnl",
+                                ),
+                                default=None,
                             )
                         ),
                         "closed trades",
@@ -693,74 +1447,187 @@ def render_dashboard():
     # ========================================================
     # HISTORY
     # ========================================================
+
     with tabs[2]:
-        trades = [t for t in lst(journal.get("trades")) if isinstance(t, dict)]
+
+        trades = [
+            t
+            for t in lst(
+                journal.get("trades")
+            )
+            if isinstance(
+                t,
+                dict,
+            )
+        ]
+
+        total_trades = first_value(
+            val(
+                paper,
+                "total_trades",
+            ),
+            len(trades),
+            default=0,
+        )
+
+        win_rate_value = first_value(
+            val(
+                paper,
+                "win_rate",
+            ),
+            val(
+                journal,
+                "win_rate",
+            ),
+            default=None,
+        )
+
+        closed_trades = first_value(
+            val(
+                paper,
+                "closed_trades",
+            ),
+            val(
+                journal,
+                "closed_trades",
+            ),
+            default=0,
+        )
 
         grid(
             [
-                card_html("TRADES", str(len(trades))),
+                card_html(
+                    "TRADES",
+                    str(total_trades),
+                ),
+
                 card_html(
                     "WIN RATE",
-                    percent(val(paper, "win_rate", default=journal.get("win_rate"))),
+                    percent(
+                        win_rate_value
+                    ),
                 ),
+
                 card_html(
                     "CLOSED",
                     str(
-                        val(
-                            paper,
-                            "closed_trades",
-                            default=journal.get("closed_trades", 0),
-                        )
+                        closed_trades
                     ),
                 ),
             ],
             3,
         )
 
-        # Wallet/P&L intentionally NOT repeated here.
-
-        section("RECENT TRADES")
+        section(
+            "RECENT TRADES"
+        )
 
         if trades:
-            for trade in reversed(trades[-6:]):
-                status = str(trade.get("status", "—")).upper()
-                pnl_value = val(
-                    trade,
-                    "pnl_realized",
-                    default=trade.get("running_pnl"),
+
+            for trade in reversed(
+                trades[-6:]
+            ):
+
+                status = str(
+                    trade.get(
+                        "status",
+                        "—",
+                    )
+                ).upper()
+
+                pnl_value = first_value(
+                    val(
+                        trade,
+                        "pnl_realized",
+                    ),
+                    val(
+                        trade,
+                        "running_pnl",
+                    ),
+                    default=None,
                 )
-                numeric_pnl = safe_float(pnl_value)
+
+                numeric_pnl = safe_float(
+                    pnl_value
+                )
+
                 result_class = (
                     "green"
                     if numeric_pnl > 0
-                    else ("red" if numeric_pnl < 0 else "yellow")
+                    else (
+                        "red"
+                        if numeric_pnl < 0
+                        else "yellow"
+                    )
                 )
 
-                symbol = trade.get("option_symbol", "—")
-                trade_type = trade.get("trade_type", trade.get("type", "—"))
+                symbol = trade.get(
+                    "option_symbol",
+                    "—",
+                )
+
+                trade_type = trade.get(
+                    "trade_type",
+                    trade.get(
+                        "type",
+                        "—",
+                    ),
+                )
+
                 entry_time = trade.get(
                     "entry_time",
-                    trade.get("candle_time", "—"),
+                    trade.get(
+                        "candle_time",
+                        "—",
+                    ),
                 )
 
                 st.markdown(
-                    f'<div class="status">'
-                    f'<span class="left"><b>{trade_type} · {symbol}</b>'
-                    f'<span class="detail">{entry_time} · {status}</span></span>'
-                    f'<b class="{result_class}">{money(pnl_value)}</b>'
-                    f'</div>',
+                    f"""
+                    <div class="status">
+                        <span class="left">
+                            <b>
+                                {trade_type} · {symbol}
+                            </b>
+
+                            <span class="detail">
+                                {entry_time} · {status}
+                            </span>
+                        </span>
+
+                        <b class="{result_class}">
+                            {money(pnl_value)}
+                        </b>
+                    </div>
+                    """,
                     unsafe_allow_html=True,
                 )
+
         else:
+
             st.markdown(
-                '<div class="status"><span class="left">'
-                '<b>No paper trades yet</b></span>'
-                '<b class="muted">—</b></div>',
+                """
+                <div class="status">
+                    <span class="left">
+                        <b>No paper trades yet</b>
+                    </span>
+                    <b class="muted">—</b>
+                </div>
+                """,
                 unsafe_allow_html=True,
             )
 
+    # ========================================================
+    # FOOTER
+    # ========================================================
+
     st.markdown(
-        f'<div class="last-data">Dashboard update {datetime.now(IST).strftime("%H:%M:%S IST")}</div>',
+        f"""
+        <div class="last-data">
+            Dashboard update
+            {datetime.now(IST).strftime("%H:%M:%S IST")}
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -768,14 +1635,15 @@ def render_dashboard():
 # ============================================================
 # LIVE UPDATE
 # ============================================================
-# Fragment reruns only this dashboard area.
-# No st.rerun(), no time.sleep().
-# ============================================================
+
 if hasattr(st, "fragment"):
+
     @st.fragment(run_every=2)
     def live_dashboard():
         render_dashboard()
 
     live_dashboard()
+
 else:
+
     render_dashboard()
