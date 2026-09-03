@@ -258,25 +258,69 @@ def build_candle_dataframe(candles: Any) -> pd.DataFrame:
     return df
 
 
+def merge_local_candles(
+    api_df: pd.DataFrame,
+    local_candles: Any,
+) -> pd.DataFrame:
+    """Merge live WebSocket-built 5-min candles over API candles.
+
+    The historical API is a backfill source only. If the API is stale or
+    rate-limited, the locally built WebSocket candles keep the latest bars
+    current.
+    """
+    if api_df.empty and not local_candles:
+        return api_df.copy()
+
+    local_df = build_candle_dataframe(local_candles)
+    if local_df.empty:
+        return api_df.copy()
+    if api_df.empty:
+        return local_df.copy()
+
+    base = api_df.copy().set_index("datetime")
+    local = local_df.copy().set_index("datetime")
+    # Local tick-built OHLC has priority for timestamps it knows.
+    base.update(local)
+    missing = local.index.difference(base.index)
+    if len(missing):
+        base = pd.concat([base, local.loc[missing]], axis=0)
+    return base.reset_index().sort_values("datetime").reset_index(drop=True)
+
+
 def merge_futures_volume(
     spot_df: pd.DataFrame,
     futures_candles: Any,
+    local_futures_candles: Any = None,
 ) -> Tuple[pd.DataFrame, int]:
     """
     Align NIFTY futures candle volume with spot candle timestamps.
+    Local WebSocket-built volume has priority; historical API is fallback.
     Spot OHLC remains the price source.
     """
     out = spot_df.copy()
     out["futures_volume"] = 0.0
 
     fut = build_candle_dataframe(futures_candles)
-    if fut.empty or out.empty:
-        return out, 0
+    local_rows = local_futures_candles if isinstance(local_futures_candles, list) else []
 
     fmap: Dict[pd.Timestamp, float] = {}
     for _, row in fut.iterrows():
         key = pd.Timestamp(row["datetime"]).floor("min")
         fmap[key] = float(row["volume"])
+
+    # Local volume is cumulative-delta based and therefore fresher.
+    for row in local_rows:
+        if not isinstance(row, dict):
+            continue
+        dt = pd.to_datetime(row.get("date", row.get("datetime")), errors="coerce", utc=True)
+        if pd.isna(dt):
+            continue
+        key = pd.Timestamp(dt).tz_convert(IST).floor("min")
+        vol = safe_float(row.get("volume"), 0.0)
+        fmap[key] = float(vol or 0.0)
+
+    if out.empty:
+        return out, 0
 
     matched = 0
     values: List[float] = []
@@ -652,13 +696,20 @@ def calculate_indicators(raw: Dict[str, Any], now: datetime) -> Optional[Dict[st
         return None
 
     candles = raw.get("candles") or []
+    local_candles = raw.get("local_5m_candles") or []
     futures_candles = raw.get("futures_candles") or []
+    local_futures_volume = raw.get("local_futures_volume_candles") or []
 
-    df = build_candle_dataframe(candles)
+    api_df = build_candle_dataframe(candles)
+    df = merge_local_candles(api_df, local_candles)
     if df.empty:
         return None
 
-    df, volume_matches = merge_futures_volume(df, futures_candles)
+    df, volume_matches = merge_futures_volume(
+        df,
+        futures_candles,
+        local_futures_volume,
+    )
     completed_df, forming_df = split_completed_and_forming(df, now)
 
     if completed_df.empty:
@@ -853,6 +904,8 @@ def calculate_indicators(raw: Dict[str, Any], now: datetime) -> Optional[Dict[st
         "completed_candle_count": int(len(completed_df)),
         "forming_candle_count": int(len(forming_df)),
         "volume_merge_matches": int(volume_matches),
+        "local_candle_count": int(len(local_candles)),
+        "local_futures_volume_count": int(len(local_futures_volume)),
         "latest_completed_candle": closed_candle,
         "recent_completed_candles": build_recent_candles(completed_df, 30),
         "worker_websocket_connected": raw.get("websocket_connected"),
@@ -867,44 +920,6 @@ def calculate_indicators(raw: Dict[str, Any], now: datetime) -> Optional[Dict[st
     payload["futures_contract"] = raw.get("futures_contract")
     payload["futures_tick"] = raw.get("futures_tick")
     payload["live_futures_volume_5m"] = raw.get("live_futures_volume_5m")
-
-    # --------------------------------------------------------
-    # DOWNSTREAM FIELD COMPATIBILITY
-    # --------------------------------------------------------
-    # These are aliases of already-calculated technical data only.
-    # They do NOT create any strategy decision.
-    payload["rsi"] = round(live_rsi, 2)
-    payload["ema9"] = round(live_ema9, 2)
-    payload["ema20"] = round(live_ema20, 2)
-    payload["signal_rsi"] = round(closed_rsi, 2)
-    payload["signal_ema9"] = round(closed_ema9, 2)
-    payload["signal_ema20"] = round(closed_ema20, 2)
-    payload["intraday_high"] = round(intraday_high, 2)
-    payload["intraday_low"] = round(intraday_low, 2)
-
-    payload["signal_volume"] = volume.get("completed_candle_volume", 0.0)
-    payload["signal_volume_avg"] = volume.get("completed_candle_average_prior_20", 0.0)
-    payload["signal_volume_ratio"] = volume.get("completed_candle_ratio", 0.0)
-    payload["live_volume"] = volume.get("live_futures_volume_5m")
-    payload["live_volume_avg"] = volume.get("historical_average_volume", 0.0)
-    payload["live_volume_ratio"] = volume.get("live_volume_ratio", 0.0)
-    payload["signal_vol_status"] = volume.get("completed_volume_status")
-    payload["signal_rsi_status"] = "AVAILABLE" if closed_rsi is not None else "UNAVAILABLE"
-    payload["signal_ema_status"] = "AVAILABLE" if closed_ema9 is not None and closed_ema20 is not None else "UNAVAILABLE"
-
-    # Paper engine expects the latest completed candles as a list.
-    payload["completed_candles"] = payload["recent_completed_candles"]
-
-    # Paper engine/dashboard compatibility: expose the same structural
-    # level object already calculated above, without adding trade logic.
-    payload["level_engine"] = levels
-
-    # Direction-neutral runway data. CE/PE are kept separate so no
-    # directional choice is made by this processor.
-    payload["runway_ce"] = distances.get("ce_runway")
-    payload["runway_pe"] = distances.get("pe_runway")
-    payload["runway_status_ce"] = distances.get("ce_runway_status")
-    payload["runway_status_pe"] = distances.get("pe_runway_status")
 
     return json_safe(payload)
 
@@ -953,8 +968,8 @@ def start_indicator_engine() -> None:
 
                 logging.info(
                     "📊 INDICATORS | Spot=%.2f | LIVE RSI=%.2f EMA9=%.2f EMA20=%.2f | "
-                    "CLOSED=%s RSI=%.2f EMA9=%.2f EMA20=%.2f | VOL=%.2fx | "
-                    "DayH/L=%.2f/%.2f",
+                    "CLOSED=%s RSI=%.2f EMA9=%.2f EMA20=%.2f | "
+                    "VOL=%.2fx LIVEVOL=%.2fx | DayH/L=%.2f/%.2f",
                     float(processed["live_spot"]),
                     float(live.get("rsi", 50.0)),
                     float(live.get("ema9", 0.0)),
@@ -964,6 +979,7 @@ def start_indicator_engine() -> None:
                     float(closed.get("ema9", 0.0)),
                     float(closed.get("ema20", 0.0)),
                     float(vol.get("completed_candle_ratio", 0.0)),
+                    float(vol.get("live_volume_ratio", 0.0)),
                     float(processed["live_day_high"]),
                     float(processed["live_day_low"]),
                 )
