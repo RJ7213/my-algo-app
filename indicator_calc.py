@@ -70,7 +70,8 @@ logging.basicConfig(
 IST = timezone(timedelta(hours=5, minutes=30))
 
 DATA_RAW_FILE = "data_raw.json"
-SIGNAL_FILE = "strategy_signal.json"
+SIGNAL_FILE = "processed_indicators.json"
+LEGACY_SIGNAL_FILE = "strategy_signal.json"
 
 
 # ============================================================
@@ -1077,10 +1078,8 @@ def start_indicator_engine():
                         now_ist().isoformat(),
                 }
 
-                atomic_write_json(
-                    SIGNAL_FILE,
-                    payload,
-                )
+                atomic_write_json(SIGNAL_FILE, payload)
+                atomic_write_json(LEGACY_SIGNAL_FILE, payload)
 
                 time.sleep(1)
                 continue
@@ -1271,10 +1270,8 @@ def start_indicator_engine():
 
             }
 
-            atomic_write_json(
-                SIGNAL_FILE,
-                payload,
-            )
+            atomic_write_json(SIGNAL_FILE, payload)
+            atomic_write_json(LEGACY_SIGNAL_FILE, payload)
 
         except Exception as exc:
 
