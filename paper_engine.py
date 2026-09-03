@@ -1749,9 +1749,11 @@ def start_paper_engine() -> None:
             if not market_open_from_raw(raw):
                 active = find_active_trade(ledger)
 
+                # After market close: never create/exit a paper trade,
+                # but keep the latest strategy decision visible on TRADE tab.
+                # This prevents the dashboard from becoming blank just because
+                # the session ended.
                 if active:
-                    # Do not manufacture an exit price after close.
-                    # Preserve the last known running P&L.
                     publish_output(
                         raw,
                         ind if isinstance(ind, dict) else {},
@@ -1760,15 +1762,28 @@ def start_paper_engine() -> None:
                         None,
                         active,
                     )
+                elif isinstance(ind, dict) and isinstance(structure, dict):
+                    spot = safe_float(raw.get("live_spot"))
+                    if spot is not None and spot > 0:
+                        try:
+                            closed_decision = choose_setup(ind, structure, spot)
+                        except Exception as exc:
+                            logging.debug("Closed-session decision snapshot error: %s", exc)
+                            closed_decision = {
+                                "ready": False,
+                                "setup": "NONE",
+                                "reason": "Decision snapshot unavailable",
+                            }
+                        closed_decision = dict(closed_decision)
+                        closed_decision["paper_entry_allowed"] = False
+                        closed_decision["market_closed"] = True
+                        publish_output(
+                            raw, ind, structure, ledger, closed_decision, None
+                        )
+                    else:
+                        publish_output(raw, ind, structure, ledger, None, None)
                 else:
-                    publish_output(
-                        raw,
-                        ind if isinstance(ind, dict) else {},
-                        structure if isinstance(structure, dict) else {},
-                        ledger,
-                        None,
-                        None,
-                    )
+                    publish_output(raw, {}, {}, ledger, None, None)
 
                 time.sleep(1.0)
                 continue
