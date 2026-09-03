@@ -80,6 +80,21 @@ FUTURE_CANDLE_CACHE_FILE = "future_candle_cache.json"
 # TIME / JSON
 # ============================================================
 
+def market_status_now(dt=None):
+    """Simple NSE cash-market session status used by the dashboard/engine.
+    09:15-15:30 IST on weekdays is OPEN; otherwise CLOSED.
+    This is deliberately independent of WebSocket connectivity.
+    """
+    dt = dt or now_ist()
+    if dt.weekday() >= 5:
+        return "CLOSED"
+    t = dt.time()
+    from datetime import time as dtime
+    if dtime(9, 15) <= t <= dtime(15, 30):
+        return "OPEN"
+    return "CLOSED"
+
+
 def now_ist():
     return datetime.now(IST)
 
@@ -1546,6 +1561,13 @@ def start_backend_factory():
 
                         "websocket_connected":
                             websocket_connected,
+
+                        # Market status is clock-based, not WebSocket-based.
+                        # A connected socket after 15:30 must still show CLOSED.
+                        "market_status":
+                            market_status_now(now_dt),
+                        "worker_status":
+                            "RUNNING" if websocket_connected else "DISCONNECTED",
 
                         "last_update":
                             now_dt.strftime(
