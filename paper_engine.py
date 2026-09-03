@@ -38,6 +38,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    from persistent_store import load_bundle as remote_load_bundle, save_bundle as remote_save_bundle, cached_state as remote_cached_state, enabled as remote_persistence_enabled
+except Exception:
+    remote_load_bundle = None
+    remote_save_bundle = None
+    remote_cached_state = lambda: {}
+    remote_persistence_enabled = lambda: False
+
 
 # ============================================================
 # CONFIG — STRATEGY RULES LOCKED
@@ -168,6 +176,12 @@ def market_open_from_raw(raw: Dict[str, Any]) -> bool:
 # LEDGER
 # ============================================================
 
+# Optional external persistence cache.  Supabase is used only when
+# SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are configured.
+_REMOTE_LEDGER = None
+_REMOTE_STATE = None
+
+
 def default_ledger() -> Dict[str, Any]:
     return {
         "starting_balance": STARTING_BALANCE,
@@ -244,8 +258,24 @@ def recalculate_ledger(ledger: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_ledger() -> Dict[str, Any]:
-    ledger = load_json(LEDGER_FILE, None)
-    if not isinstance(ledger, dict):
+    global _REMOTE_LEDGER, _REMOTE_STATE
+
+    local = load_json(LEDGER_FILE, None)
+    remote = None
+    if remote_load_bundle is not None and remote_persistence_enabled():
+        remote = remote_load_bundle()
+
+    if remote is not None:
+        _REMOTE_LEDGER, _REMOTE_STATE = remote
+        ledger = _REMOTE_LEDGER
+        # Keep a local recovery copy too.
+        try:
+            atomic_write_json(LEDGER_FILE, ledger)
+        except Exception:
+            pass
+    elif isinstance(local, dict):
+        ledger = local
+    else:
         ledger = default_ledger()
 
     defaults = default_ledger()
@@ -255,9 +285,11 @@ def load_ledger() -> Dict[str, Any]:
     return recalculate_ledger(ledger)
 
 
-def save_ledger(ledger: Dict[str, Any]) -> Dict[str, Any]:
+def save_ledger(ledger: Dict[str, Any], force_remote: bool = False) -> Dict[str, Any]:
     ledger = recalculate_ledger(ledger)
     atomic_write_json(LEDGER_FILE, ledger)
+    if remote_save_bundle is not None and remote_persistence_enabled():
+        remote_save_bundle(ledger, _REMOTE_STATE or {}, force=force_remote)
     return ledger
 
 
@@ -1354,7 +1386,7 @@ def close_trade(
 # ============================================================
 
 def load_state() -> Dict[str, Any]:
-    state = load_json(
+    local = load_json(
         STATE_FILE,
         {
             "last_entry_candle": "",
@@ -1364,6 +1396,7 @@ def load_state() -> Dict[str, Any]:
         },
     )
 
+    state = _REMOTE_STATE if isinstance(_REMOTE_STATE, dict) else local
     if not isinstance(state, dict):
         state = {}
 
@@ -1371,12 +1404,18 @@ def load_state() -> Dict[str, Any]:
     state.setdefault("last_entry_signal_key", "")
     state.setdefault("last_exit_trade_id", "")
     state.setdefault("last_processed_candle", "")
-
+    atomic_write_json(STATE_FILE, state)
     return state
 
 
-def save_state(state: Dict[str, Any]) -> None:
+def save_state(state: Dict[str, Any], force_remote: bool = False) -> None:
+    global _REMOTE_STATE
+    _REMOTE_STATE = dict(state)
     atomic_write_json(STATE_FILE, state)
+    if remote_save_bundle is not None and remote_persistence_enabled():
+        # Ledger is loaded globally by start_paper_engine before state is saved.
+        current_ledger = load_json(LEDGER_FILE, default_ledger())
+        remote_save_bundle(current_ledger, state, force=force_remote)
 
 
 # ============================================================
@@ -1494,13 +1533,13 @@ def process_once(
                         trigger,
                         trigger_reason or trigger,
                     )
-                    save_ledger(ledger)
+                    save_ledger(ledger, force_remote=True)
 
                     state["last_exit_trade_id"] = active.get("trade_id", "")
                     state["last_processed_candle"] = str(
                         active.get("candle_time", "")
                     )
-                    save_state(state)
+                    save_state(state, force_remote=True)
 
                     logging.info(
                         "🔴 PAPER EXIT | %s | Entry %.2f | Exit %.2f | Qty %d | P&L ₹%.2f | %s",
@@ -1604,8 +1643,8 @@ def process_once(
         ledger["trades"].append(trade)
         state["last_entry_signal_key"] = signal_key
 
-        save_ledger(ledger)
-        save_state(state)
+        save_ledger(ledger, force_remote=True)
+        save_state(state, force_remote=True)
 
         logging.info(
             "🟢 PAPER ENTRY | %s | %s | Strike=%d | "
