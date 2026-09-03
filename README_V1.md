@@ -1,29 +1,10 @@
-# NIFTY Algo V1 — Live Paper Observation Build
+NIFTY DATA PIPELINE FIX
 
-## Important
-This is a paper-trading observation build. It does not place live orders.
-
-## Data architecture
-Only `data_worker.py` communicates with Angel One. It publishes:
-- live NIFTY spot
-- 5-minute historical candles
-- resolved nearest-expiry NIFTY option contract
-- live option LTP
-
-`indicator_calc.py` creates signals and the option strike hint.
-`paper_engine.py` consumes the published option LTP and records paper trades.
-`Trading app.py` displays actual option-LTP-based running P&L.
-
-## Environment variables
-Copy `.env.example` into your deployment secrets/environment settings. Do not commit real credentials.
-
-## Run order
-1. data_worker.py
-2. indicator_calc.py
-3. paper_engine.py
-4. streamlit run "Trading app.py"
-
-## Paper P&L
-Running and realized paper P&L use the actual NFO option LTP supplied by the Data Worker. No fixed ₹100 entry and no 0.50-delta running-P&L approximation are used.
-
-The strategy's index target/stop still determines the exit trigger in this V1 observation build. The actual option LTP at the trigger is used as the option exit price for P&L.
+1. data_worker.py now builds live NIFTY 5-minute OHLC candles directly from Angel One WebSocket ticks.
+2. data_worker.py now builds NIFTY futures 5-minute volume from cumulative day-volume deltas.
+3. indicator_calc.py gives local WebSocket-built candles/volume priority over stale historical API data.
+4. Historical candle API is backfill only and is throttled to reduce Angel rate-limit errors.
+5. Strategy architecture is unchanged: no CALL/PUT or BUY/SELL decisions in either worker or indicator_calc.
+6. paper_engine.py remains the only decision/paper execution engine.
+7. RSI/EMA are still calculated from 5-minute NIFTY closes; LIVE values now include the locally built current candle even when historical API is rate-limited.
+8. Volume completed-candle ratio uses locally accumulated futures volume when available.
