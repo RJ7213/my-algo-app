@@ -383,13 +383,15 @@ def make_future_contract(item, today):
     expiry = extract_expiry(item)
     if expiry is not None and expiry < today:
         return None
+    if not re.fullmatch(r"NIFTY\d{2}[A-Z]{3}\d{2}FUT", symbol):
+        return None
     token = item.get("symboltoken") or item.get("token")
-    if not token:
+    if not valid_single_token(token):
         return None
     return {
         "exchange": "NFO",
         "tradingsymbol": symbol,
-        "symboltoken": str(token),
+        "symboltoken": str(token).strip(),
         "expiry": expiry.isoformat() if expiry else None,
     }
 
@@ -528,6 +530,67 @@ def resolve_option_from_cache(
 
 
 # ============================================================
+# LOCAL 5-MINUTE DATA BUILDERS
+# ============================================================
+FIVE_MINUTE = 5
+MAX_LOCAL_CANDLES = 500
+MAX_LOCAL_VOLUME_CANDLES = 500
+
+def five_minute_bucket(ts):
+    return ts.replace(minute=(ts.minute // FIVE_MINUTE) * FIVE_MINUTE, second=0, microsecond=0)
+
+def valid_single_token(value):
+    text = str(value or "").strip()
+    return bool(re.fullmatch(r"\d+", text))
+
+def update_local_ohlc(store, ts, price):
+    bucket = five_minute_bucket(ts)
+    key = bucket.isoformat()
+    px = float(price)
+    row = store.get(key)
+    if row is None:
+        row = {"timestamp": key, "open": px, "high": px, "low": px, "close": px, "volume": 0.0, "source": "websocket"}
+        store[key] = row
+    else:
+        row["high"] = max(float(row["high"]), px)
+        row["low"] = min(float(row["low"]), px)
+        row["close"] = px
+    if len(store) > MAX_LOCAL_CANDLES:
+        for old_key in sorted(store)[:-MAX_LOCAL_CANDLES]:
+            store.pop(old_key, None)
+    return row
+
+def update_local_futures_volume(store, ts, day_volume, state):
+    try:
+        cumulative = float(day_volume)
+    except (TypeError, ValueError):
+        return None
+    bucket = five_minute_bucket(ts)
+    key = bucket.isoformat()
+    if state.get("anchor") is None:
+        state.update({"bucket": key, "anchor": cumulative, "last_day_volume": cumulative, "current_volume": 0.0})
+    previous_day_volume = state.get("last_day_volume")
+    if previous_day_volume is not None and cumulative < float(previous_day_volume):
+        state["anchor"] = cumulative
+        state["current_volume"] = 0.0
+    current_bucket = state.get("bucket")
+    if current_bucket != key:
+        if current_bucket is not None:
+            previous_volume = max(0.0, cumulative - float(state.get("anchor") or cumulative))
+            store[current_bucket] = {"timestamp": current_bucket, "volume": previous_volume, "source": "websocket_cumulative_day_volume", "forming": False}
+        state["bucket"] = key
+        state["anchor"] = cumulative
+        state["current_volume"] = 0.0
+    else:
+        state["current_volume"] = max(0.0, cumulative - float(state.get("anchor") or cumulative))
+    state["last_day_volume"] = cumulative
+    store[key] = {"timestamp": key, "volume": float(state.get("current_volume") or 0.0), "source": "websocket_cumulative_day_volume", "forming": True}
+    if len(store) > MAX_LOCAL_VOLUME_CANDLES:
+        for old_key in sorted(store)[:-MAX_LOCAL_VOLUME_CANDLES]:
+            store.pop(old_key, None)
+    return float(state.get("current_volume") or 0.0)
+
+# ============================================================
 # MAIN BACKEND
 # ============================================================
 
@@ -641,13 +704,13 @@ def start_backend_factory():
                 )
             )
 
-            # Historical candle API is BACKFILL ONLY.
-            # Current/just-completed candles are built from WebSocket ticks,
-            # so this endpoint is deliberately called much less often.
-            candle_retry_delay = 300.0
+            # Dynamic retry delay.
+            # Starts at 60 sec.
+            # On rate-limit/error it increases.
+            candle_retry_delay = 60.0
 
-            # Maximum retry delay = 10 minutes.
-            MAX_CANDLE_RETRY = 600.0
+            # Maximum retry delay = 5 minutes.
+            MAX_CANDLE_RETRY = 300.0
 
             # Futures candle API is slower than live ticks and is only needed
             # for completed-candle volume history. Never hammer the endpoint.
@@ -707,31 +770,23 @@ def start_backend_factory():
             session_day = now_ist().date()
             live_day_high = None
             live_day_low = None
-
-            # ----------------------------------------------------
-            # LOCAL 5-MIN CANDLE BUILDER FROM LIVE WEBSOCKET TICKS
-            # ----------------------------------------------------
-            # Historical candle API is only a backfill source.  The live
-            # candle stream below keeps the current and just-completed
-            # 5-minute candles fresh even when Angel candle API is
-            # rate-limited.  No strategy is calculated here.
-            nifty_local_current = None
-            nifty_local_completed = []
-            MAX_LOCAL_CANDLES = 120
-
-            # ----------------------------------------------------
-            # LOCAL 5-MIN FUTURES VOLUME BUILDER
-            # ----------------------------------------------------
-            # volume_trade_for_the_day is cumulative.  We accumulate its
-            # deltas locally into exact 5-minute buckets.
             futures_volume_bucket = None
-            futures_bucket_volume = 0.0
-            futures_last_day_volume = None
-            futures_local_completed = []
+            futures_volume_anchor = None
+            local_nifty_candles = {}
+            local_futures_volume_candles = {}
+            futures_volume_state = {"bucket": None, "anchor": None, "last_day_volume": None, "current_volume": 0.0}
 
             # ====================================================
             # WEBSOCKET
             # ====================================================
+
+            if futures_contract:
+                fut_token = str(futures_contract.get("symboltoken", "")).strip()
+                if not valid_single_token(fut_token):
+                    logging.error("🔴 Refusing invalid NIFTY FUT contract: symbol=%s token=%r", futures_contract.get("tradingsymbol"), futures_contract.get("symboltoken"))
+                    futures_contract = None
+                else:
+                    futures_contract["symboltoken"] = fut_token
 
             sws = SmartWebSocketV2(
                 auth_token,
@@ -913,6 +968,7 @@ def start_backend_factory():
                                 "timestamp":
                                     ts.isoformat(),
                             }
+                            update_local_ohlc(local_nifty_candles, ts, price)
 
                             logging.debug(
                                 "NIFTY TICK: %.2f",
@@ -943,6 +999,12 @@ def start_backend_factory():
                             }
 
                             if volume_day is not None:
+                                update_local_futures_volume(
+                                    local_futures_volume_candles,
+                                    ts,
+                                    volume_day,
+                                    futures_volume_state,
+                                )
                                 logging.debug(
                                     "NIFTY FUT TICK: %.2f | day_volume=%.0f",
                                     price,
@@ -1110,49 +1172,6 @@ def start_backend_factory():
                     )
 
                     # =================================================
-                    # LOCAL NIFTY 5-MIN OHLC FROM LIVE TICKS
-                    # =================================================
-                    bucket_start = now_dt.replace(
-                        minute=(now_dt.minute // 5) * 5,
-                        second=0,
-                        microsecond=0,
-                    )
-                    bucket_iso = bucket_start.isoformat()
-
-                    if session_day != now_dt.date():
-                        nifty_local_current = None
-                        nifty_local_completed = []
-                        futures_volume_bucket = None
-                        futures_bucket_volume = 0.0
-                        futures_last_day_volume = None
-
-                    if nifty_local_current is None:
-                        nifty_local_current = {
-                            "date": bucket_iso,
-                            "open": spot,
-                            "high": spot,
-                            "low": spot,
-                            "close": spot,
-                            "volume": 0.0,
-                        }
-                    elif nifty_local_current["date"] != bucket_iso:
-                        # Finalize the previous 5-minute candle.
-                        nifty_local_completed.append(dict(nifty_local_current))
-                        nifty_local_completed = nifty_local_completed[-MAX_LOCAL_CANDLES:]
-                        nifty_local_current = {
-                            "date": bucket_iso,
-                            "open": spot,
-                            "high": spot,
-                            "low": spot,
-                            "close": spot,
-                            "volume": 0.0,
-                        }
-                    else:
-                        nifty_local_current["high"] = max(float(nifty_local_current["high"]), spot)
-                        nifty_local_current["low"] = min(float(nifty_local_current["low"]), spot)
-                        nifty_local_current["close"] = spot
-
-                    # =================================================
                     # LIVE DAY HIGH / LOW FROM EVERY NIFTY TICK
                     # =================================================
                     if session_day != now_dt.date():
@@ -1170,32 +1189,17 @@ def start_backend_factory():
                     if futures_tick and futures_tick.get("volume_day") is not None:
                         try:
                             day_volume = float(futures_tick["volume_day"])
-
-                            # Detect a fresh trading session / cumulative reset.
-                            if futures_last_day_volume is not None and day_volume < futures_last_day_volume:
-                                futures_volume_bucket = None
-                                futures_bucket_volume = 0.0
-
-                            delta = 0.0
-                            if futures_last_day_volume is not None:
-                                delta = max(0.0, day_volume - futures_last_day_volume)
-                            futures_last_day_volume = day_volume
-
-                            if futures_volume_bucket is None:
-                                futures_volume_bucket = bucket_iso
-                                futures_bucket_volume = 0.0
-                            elif futures_volume_bucket != bucket_iso:
-                                # Finalize the previous bucket before starting the new one.
-                                futures_local_completed.append({
-                                    "date": futures_volume_bucket,
-                                    "volume": float(futures_bucket_volume),
-                                })
-                                futures_local_completed = futures_local_completed[-MAX_LOCAL_CANDLES:]
-                                futures_volume_bucket = bucket_iso
-                                futures_bucket_volume = 0.0
-
-                            futures_bucket_volume += delta
-                            live_futures_volume_5m = float(futures_bucket_volume)
+                            bucket = now_dt.replace(
+                                minute=(now_dt.minute // 5) * 5,
+                                second=0,
+                                microsecond=0,
+                            ).isoformat()
+                            if bucket != futures_volume_bucket:
+                                futures_volume_bucket = bucket
+                                futures_volume_anchor = day_volume
+                                live_futures_volume_5m = 0.0
+                            else:
+                                live_futures_volume_5m = max(0.0, day_volume - float(futures_volume_anchor or day_volume))
                         except (TypeError, ValueError):
                             live_futures_volume_5m = None
 
@@ -1609,6 +1613,17 @@ def start_backend_factory():
                     # PUBLISH data_raw.json
                     # =================================================
 
+                    local_candles_list = [local_nifty_candles[k] for k in sorted(local_nifty_candles)]
+                    local_volume_list = [local_futures_volume_candles[k] for k in sorted(local_futures_volume_candles)]
+                    today_prefix = now_dt.date().isoformat()
+                    today_candles = [c for c in local_candles_list if str(c.get("timestamp", "")).startswith(today_prefix)]
+                    highs = [float(c["high"]) for c in today_candles if c.get("high") is not None]
+                    lows = [float(c["low"]) for c in today_candles if c.get("low") is not None]
+                    if highs:
+                        live_day_high = max(highs + [spot])
+                    if lows:
+                        live_day_low = min(lows + [spot])
+
                     payload = {
                         "market_status": "OPEN",
                         "worker_status": "LIVE",
@@ -1623,21 +1638,14 @@ def start_backend_factory():
                         "candles":
                             cached_candles or [],
 
-                        # Live-built candles are the freshest source and are
-                        # merged by indicator_calc over the API backfill.
                         "local_5m_candles":
-                            nifty_local_completed[-MAX_LOCAL_CANDLES:]
-                            + ([dict(nifty_local_current)] if nifty_local_current else []),
+                            local_candles_list,
 
                         "futures_candles":
                             cached_futures_candles or [],
 
                         "local_futures_volume_candles":
-                            futures_local_completed[-MAX_LOCAL_CANDLES:]
-                            + ([{
-                                "date": futures_volume_bucket,
-                                "volume": float(futures_bucket_volume),
-                            }] if futures_volume_bucket else []),
+                            local_volume_list,
 
                         "futures_contract":
                             futures_contract,
@@ -1664,6 +1672,12 @@ def start_backend_factory():
 
                         "websocket_connected":
                             websocket_connected,
+
+                        "data_source": "websocket_primary_with_api_backfill",
+                        "local_candle_count": len(local_candles_list),
+                        "local_futures_volume_candle_count": len(local_volume_list),
+                        "latest_local_candle": local_candles_list[-1] if local_candles_list else None,
+                        "latest_local_futures_volume": local_volume_list[-1] if local_volume_list else None,
 
                         "option_contract":
                             option_contract,
