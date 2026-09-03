@@ -666,16 +666,6 @@ def paper_active_trade(paper, journal):
 def render_header(raw, paper):
     connected = raw_websocket(raw)
 
-    if connected is True:
-        status_text = "🟢 LIVE"
-        status_class = "green"
-    elif connected is False:
-        status_text = "🔴 OFF"
-        status_class = "red"
-    else:
-        status_text = "🟡 UNKNOWN"
-        status_class = "yellow"
-
     market_status = source_value(
         raw,
         "market_status",
@@ -685,6 +675,21 @@ def render_header(raw, paper):
             default="UNKNOWN",
         ),
     )
+
+    # A live WebSocket can remain connected after the exchange closes.
+    # Therefore market status controls the primary badge.
+    if str(market_status).upper() == "CLOSED":
+        status_text = "🟡 CLOSED"
+        status_class = "yellow"
+    elif connected is True:
+        status_text = "🟢 LIVE"
+        status_class = "green"
+    elif connected is False:
+        status_text = "🔴 OFF"
+        status_class = "red"
+    else:
+        status_text = "🟡 UNKNOWN"
+        status_class = "yellow"
 
     render_html(
         f"""
