@@ -516,12 +516,23 @@ def build_order_flow_summary(
         )
         total = buy + sell
         imbalance = (buy - sell) / total if total > 0 else 0.0
+        if imbalance >= ORDER_FLOW_STRONG_THRESHOLD:
+            state = "BUY_DOMINANT"
+        elif imbalance >= ORDER_FLOW_IMBALANCE_THRESHOLD:
+            state = "BUY_BIASED"
+        elif imbalance <= -ORDER_FLOW_STRONG_THRESHOLD:
+            state = "SELL_DOMINANT"
+        elif imbalance <= -ORDER_FLOW_IMBALANCE_THRESHOLD:
+            state = "SELL_BIASED"
+        else:
+            state = "BALANCED"
         return {
             "buy_qty": round(buy, 2),
             "sell_qty": round(sell, 2),
             "best5_buy_qty": round(best_buy, 2),
             "best5_sell_qty": round(best_sell, 2),
             "imbalance": round(imbalance, 5),
+            "state": state,
         }
 
     ce_sum = side_total(ce)
@@ -601,6 +612,9 @@ def oi_support_resistance(
     return {
         "supports": supports,
         "resistances": resistances,
+        # Compatibility values used by the read-only dashboard.
+        "support": supports[0]["strike"] if supports else None,
+        "resistance": resistances[0]["strike"] if resistances else None,
     }
 
 
@@ -609,7 +623,11 @@ def oi_support_resistance(
 # ============================================================
 
 def futures_structure(raw: Dict[str, Any]) -> Dict[str, Any]:
-    tick = raw.get("futures_tick")
+    # data_worker.py publishes the live futures snapshot as future_quote.
+    # Keep the older futures_tick name as a compatibility fallback.
+    tick = raw.get("future_quote")
+    if not isinstance(tick, dict):
+        tick = raw.get("futures_tick")
     if not isinstance(tick, dict):
         tick = {}
 
@@ -644,7 +662,7 @@ def futures_structure(raw: Dict[str, Any]) -> Dict[str, Any]:
         flow_state = "BALANCED"
 
     return {
-        "contract": raw.get("futures_contract"),
+        "contract": raw.get("future_contract") or raw.get("futures_contract"),
         "ltp": round_price(ltp),
         "volume_day": round(volume, 2),
         "open_interest": round(oi, 2),
