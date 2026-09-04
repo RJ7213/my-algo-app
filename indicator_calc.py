@@ -854,23 +854,21 @@ def calculate_closed_candle_signal(
     current_volume = float(volume_source["volume"].iloc[-2] or 0.0)
     vol_avg = float(volume_window.mean() if not volume_window.empty else 0.0)
 
-    if vol_avg > 0:
-
-        vol_ratio = round(
-            current_volume
-            / vol_avg,
-            2,
-        )
-
-    else:
-
-        vol_ratio = 0.0
-
-    vol_status = (
-        "PASS"
-        if vol_ratio >= MIN_VOLUME_RATIO
-        else "FAIL"
+    if current_volume > 0 and vol_avg > 0:
+    vol_ratio = round(
+        current_volume / vol_avg,
+        2,
     )
+    vol_data_valid = True
+else:
+    vol_ratio = None
+    vol_data_valid = False
+
+vol_status = (
+    "PASS"
+    if vol_data_valid and vol_ratio >= MIN_VOLUME_RATIO
+    else "FAIL"
+)
 
     # --------------------------------------------------------
     # RUNWAY
@@ -1040,7 +1038,7 @@ def calculate_closed_candle_signal(
             vol_status,
 
         "vol_val":
-            f"{vol_ratio}x",
+    f"{vol_ratio}x" if vol_ratio is not None else "DATA WAIT",
 
         "volume_ratio":
             vol_ratio,
