@@ -1108,6 +1108,33 @@ def start_backend_factory():
                     spot_live_candle = spot_candles[-1] if spot_candles else None
 
                     # ------------------------------------------------
+                    # LIVE FUTURES 5-MIN CANDLE
+                    # ------------------------------------------------
+                    # Futures volume is available as a cumulative exchange
+                    # value. on_data converts it to a non-negative increment.
+                    # Maintain the live futures candle here so downstream
+                    # engines can use completed futures volume consistently.
+                    if future_tick is not None:
+                        future_price = safe_float(future_tick.get("ltp"))
+                        if future_price is not None:
+                            future_candles = update_live_candle(
+                                future_candles,
+                                future_tick["timestamp"],
+                                future_price,
+                                future_tick.get("volume_increment", 0.0),
+                            )[-300:]
+                            future_live_candle = (
+                                future_candles[-1]
+                                if future_candles
+                                else None
+                            )
+                            save_cached_candles_file(
+                                FUTURE_CANDLE_CACHE_FILE,
+                                future_candles,
+                                now_dt.isoformat(),
+                            )
+
+                    # ------------------------------------------------
                     # HISTORICAL SPOT CANDLE BACKFILL
                     # ------------------------------------------------
 
@@ -1428,6 +1455,46 @@ def start_backend_factory():
                                     "volume_increment",
                                     0.0,
                                 ),
+                            "volume_day":
+                                future_tick.get(
+                                    "cumulative_volume"
+                                ),
+                            "total_buy_quantity":
+                                future_tick.get(
+                                    "total_buy_quantity"
+                                ),
+                            "total_sell_quantity":
+                                future_tick.get(
+                                    "total_sell_quantity"
+                                ),
+                            "open_interest":
+                                future_tick.get(
+                                    "open_interest"
+                                ),
+                            "oi":
+                                future_tick.get(
+                                    "open_interest"
+                                ),
+                            "open_interest_change_percentage":
+                                future_tick.get(
+                                    "open_interest_change_percentage"
+                                ),
+                            "oi_change_pct":
+                                future_tick.get(
+                                    "open_interest_change_percentage"
+                                ),
+                            "exchange_timestamp":
+                                future_tick.get(
+                                    "exchange_timestamp"
+                                ),
+                            "best_5_buy_data":
+                                future_tick.get(
+                                    "best_5_buy_data"
+                                ) or [],
+                            "best_5_sell_data":
+                                future_tick.get(
+                                    "best_5_sell_data"
+                                ) or [],
                         }
 
                     # ------------------------------------------------
