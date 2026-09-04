@@ -92,10 +92,13 @@ MAX_CANDLE_RANGE = 25.0
 
 MAX_OPPOSITE_WICK_RATIO = 0.05
 
-PSYCHOLOGICAL_STEP = 50.0
+PSYCHOLOGICAL_STEP = 100.0
 PSY_REJECTION_DISTANCE = 25.0
 
 TARGET_BUFFER = 5.0
+LEVEL_MERGE_DISTANCE = 20.0
+MORNING_BOX_START = "09:15"
+MORNING_BOX_END = "09:30"
 
 
 # ============================================================
@@ -452,82 +455,132 @@ def build_completed_candles(df):
 
 
 def build_level_engine(df, spot, day_high, day_low):
-    """
-    Build the major-level list consumed by paper_engine.
-
-    Sources are deliberately limited to observable market structure:
-    day high/low, recent swing highs/lows, and 100-point psychological
-    levels. EMA is never used as a support/resistance substitute.
-    """
+    """Build fixed intraday S/R zones from completed candles only."""
+    empty = {
+        "levels": [], "zones": [], "support": None, "resistance": None,
+        "support_level": None, "resistance_level": None,
+        "previous_day_high": None, "previous_day_low": None,
+        "morning_box_high": None, "morning_box_low": None,
+    }
     if df.empty or spot is None:
-        return {"levels": [], "support": None, "resistance": None}
+        return empty
 
-    levels = []
+    completed = df.iloc[:-1].copy()
+    if completed.empty:
+        return empty
+    completed["session_date"] = completed["datetime"].dt.date
+    current_date = completed["session_date"].max()
+    current = completed[completed["session_date"] == current_date].copy()
+    prior_dates = sorted(x for x in completed["session_date"].unique() if x < current_date)
+    previous = (
+        completed[completed["session_date"] == prior_dates[-1]].copy()
+        if prior_dates else completed.iloc[0:0].copy()
+    )
 
-    def add(level, name, source, strength):
+    raw_levels = []
+    def add(value, name, source, strength, allowed):
         try:
-            value = float(level)
+            value = float(value)
         except (TypeError, ValueError):
             return
         if value <= 0:
             return
-        levels.append({
-            "level": round(value, 2),
-            "name": name,
-            "source": source,
-            "strength": float(strength),
+        raw_levels.append({
+            "level": round(value, 2), "name": name, "source": source,
+            "strength": float(strength), "allowed_setups": list(allowed),
         })
 
-    # Day extremes are genuine market levels.
-    if day_low is not None:
-        add(day_low, "Day Low", "day_range", 5.0)
-    if day_high is not None:
-        add(day_high, "Day High", "day_range", 5.0)
+    pdh = float(previous["high"].max()) if not previous.empty else None
+    pdl = float(previous["low"].min()) if not previous.empty else None
+    add(pdh, "Previous Day High", "previous_day_high", 7.0, ["REJECTION", "BREAKOUT"])
+    add(pdl, "Previous Day Low", "previous_day_low", 7.0, ["REJECTION", "BREAKOUT"])
 
-    # Recent 3-candle swing points. Keep the latest 120 completed candles.
-    completed = df.iloc[:-1].tail(120).reset_index(drop=True)
-    if len(completed) >= 3:
-        for i in range(1, len(completed) - 1):
-            prev_r = completed.iloc[i - 1]
-            cur = completed.iloc[i]
-            next_r = completed.iloc[i + 1]
-            if float(cur["high"]) >= float(prev_r["high"]) and float(cur["high"]) >= float(next_r["high"]):
-                add(cur["high"], "Swing High", "swing_high", 3.0)
-            if float(cur["low"]) <= float(prev_r["low"]) and float(cur["low"]) <= float(next_r["low"]):
-                add(cur["low"], "Swing Low", "swing_low", 3.0)
+    morning = current[
+        (current["datetime"].dt.strftime("%H:%M") >= MORNING_BOX_START)
+        & (current["datetime"].dt.strftime("%H:%M") < MORNING_BOX_END)
+    ]
+    box_complete = (
+        not current.empty
+        and current["datetime"].dt.strftime("%H:%M").max() >= MORNING_BOX_END
+        and len(morning) >= 3
+    )
+    mbh = float(morning["high"].max()) if box_complete else None
+    mbl = float(morning["low"].min()) if box_complete else None
+    add(mbh, "Morning Box High", "morning_box_high", 6.0, ["REJECTION", "BREAKOUT"])
+    add(mbl, "Morning Box Low", "morning_box_low", 6.0, ["REJECTION", "BREAKOUT"])
 
-    # Psychological levels remain available for rejection context.
+    add(day_high, "Day High", "day_high", 5.0, ["REJECTION"])
+    add(day_low, "Day Low", "day_low", 5.0, ["REJECTION"])
+
+    swings = current.reset_index(drop=True)
+    if len(swings) >= 3:
+        for i in range(1, len(swings) - 1):
+            a, b, c = swings.iloc[i-1], swings.iloc[i], swings.iloc[i+1]
+            if float(b["high"]) >= float(a["high"]) and float(b["high"]) >= float(c["high"]):
+                add(b["high"], "Swing High", "swing_high", 3.0, ["REJECTION", "BREAKOUT"])
+            if float(b["low"]) <= float(a["low"]) and float(b["low"]) <= float(c["low"]):
+                add(b["low"], "Swing Low", "swing_low", 3.0, ["REJECTION", "BREAKOUT"])
+
     center = round(float(spot) / PSYCHOLOGICAL_STEP) * PSYCHOLOGICAL_STEP
     for n in range(-6, 7):
         level = center + n * PSYCHOLOGICAL_STEP
         if abs(level - float(spot)) <= 600:
-            add(level, "Psychological Level", "psychological", 1.0)
+            add(level, "Psychological Level", "psychological", 1.0, ["REJECTION"])
 
-    # Deduplicate, keeping the strongest source at the same price.
+    # Exact-price dedupe first, retaining the strongest source.
     dedup = {}
-    for item in levels:
+    for item in raw_levels:
         key = round(item["level"], 2)
         old = dedup.get(key)
         if old is None or item["strength"] > old["strength"]:
             dedup[key] = item
-    levels = list(dedup.values())
+    ordered = sorted(dedup.values(), key=lambda x: x["level"])
 
-    below = [x for x in levels if x["level"] < float(spot)]
-    above = [x for x in levels if x["level"] > float(spot)]
-    below.sort(key=lambda x: abs(float(spot) - x["level"]))
-    above.sort(key=lambda x: abs(x["level"] - float(spot)))
+    # Merge only while the total zone width remains <= 20 points.
+    groups = []
+    for item in ordered:
+        if not groups or item["level"] - groups[-1][0]["level"] > LEVEL_MERGE_DISTANCE:
+            groups.append([item])
+        else:
+            groups[-1].append(item)
 
+    zones = []
+    for group in groups:
+        strongest = sorted(group, key=lambda x: (-x["strength"], x["level"]))[0]
+        sources = sorted({x["source"] for x in group})
+        allowed = sorted({a for x in group for a in x["allowed_setups"]})
+        # Psychological-only zones are rejection-only. Confluence may inherit breakout eligibility.
+        zone = {
+            "level": strongest["level"],
+            "anchor_level": strongest["level"],
+            "zone_low": min(x["level"] for x in group),
+            "zone_high": max(x["level"] for x in group),
+            "name": strongest["name"] + (" Confluence" if len(group) > 1 else ""),
+            "source": strongest["source"],
+            "sources": sources,
+            "strength": strongest["strength"],
+            "combined_strength": round(sum(x["strength"] for x in group), 2),
+            "confluence_count": len(group),
+            "allowed_setups": allowed,
+        }
+        zones.append(zone)
+
+    below = [z for z in zones if z["zone_high"] < float(spot)]
+    above = [z for z in zones if z["zone_low"] > float(spot)]
+    inside = [z for z in zones if z["zone_low"] <= float(spot) <= z["zone_high"]]
+    below.sort(key=lambda z: float(spot) - z["zone_high"])
+    above.sort(key=lambda z: z["zone_low"] - float(spot))
+    support = below[0] if below else (inside[0] if inside else None)
+    resistance = above[0] if above else (inside[0] if inside else None)
     return {
-        "levels": levels,
-        "support": below[0]["level"] if below else None,
-        "resistance": above[0]["level"] if above else None,
-        "support_level": below[0] if below else None,
-        "resistance_level": above[0] if above else None,
+        "levels": zones, "zones": zones,
+        "support": support["zone_high"] if support else None,
+        "resistance": resistance["zone_low"] if resistance else None,
+        "support_level": support, "resistance_level": resistance,
+        "previous_day_high": pdh, "previous_day_low": pdl,
+        "morning_box_high": mbh, "morning_box_low": mbl,
+        "merge_distance": LEVEL_MERGE_DISTANCE,
     }
-
-# ============================================================
-# LIVE INDICATOR SNAPSHOT
-# ============================================================
 
 def calculate_live_snapshot(
     df,
