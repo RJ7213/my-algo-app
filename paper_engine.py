@@ -70,16 +70,21 @@ MAX_OPTION_QUOTE_AGE_SEC = float(os.getenv("MAX_OPTION_QUOTE_AGE_SEC", "5"))
 
 # Technical gates.
 VOLUME_PASS_RATIO = 1.20
-RUNWAY_MIN = 15.0
+RUNWAY_MIN = 30.0
 CANDLE_MIN = 12.0
 CANDLE_MAX = 25.0
 OPPOSITE_WICK_BODY_MAX = 0.05
 
 # Setup tolerances.
-MAJOR_LEVEL_TOLERANCE = 25.0
+MAJOR_LEVEL_TOLERANCE = 5.0
 PULLBACK_EMA_TOLERANCE = 15.0
 REJECTION_WICK_MIN_RANGE_FRACTION = 0.50
-BREAKOUT_BUFFER = 0.0
+REJECTION_MIN_RANGE = 12.0
+REJECTION_MAX_RANGE = 35.0
+REJECTION_BODY_MIN_RATIO = 0.15
+REJECTION_BODY_MAX_RATIO = 0.45
+REJECTION_OPPOSITE_WICK_MAX_RANGE_RATIO = 0.15
+BREAKOUT_BUFFER = 5.0
 
 # Psychological levels are 100-point levels.
 PSY_STEP = 100
@@ -425,67 +430,50 @@ def detect_major_rejection(
     candle: Dict[str, float],
     levels: List[Dict[str, Any]],
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]], str]:
-    """
-    Major Rejection:
-      - completed candle only
-      - candle range must later pass 12-25 gate
-      - high/low must be near a real major level
-      - rejection wick >= 50% of candle range
-      - upper rejection => PE
-      - lower rejection => CE
-
-    This deliberately uses actual major levels, not EMA as a substitute.
-    """
-    h = candle["high"]
-    l = candle["low"]
+    """Confirm a completed candle rejecting a merged S/R zone."""
     rng = candle["range"]
+    body = candle["body"]
+    if not (REJECTION_MIN_RANGE <= rng <= REJECTION_MAX_RANGE) or rng <= 0:
+        return None, None, "REJECTION_RANGE_FAIL"
+    body_ratio = body / rng
+    if not (REJECTION_BODY_MIN_RATIO <= body_ratio <= REJECTION_BODY_MAX_RATIO):
+        return None, None, "REJECTION_BODY_RATIO_FAIL"
 
-    if rng <= 0:
-        return None, None, "NO_RANGE"
-
-    upper_level = nearest_major_to_price(levels, h)
-    lower_level = nearest_major_to_price(levels, l)
-
-    upper_rejection = (
-        upper_level is not None
-        and candle["upper_wick"] >= rng * REJECTION_WICK_MIN_RANGE_FRACTION
-    )
-
-    lower_rejection = (
-        lower_level is not None
-        and candle["lower_wick"] >= rng * REJECTION_WICK_MIN_RANGE_FRACTION
-    )
-
-    if upper_rejection and lower_rejection:
-        # Prefer the larger rejection wick.
-        if candle["upper_wick"] >= candle["lower_wick"]:
-            return (
-                "PE",
-                upper_level,
-                f"Upper rejection at {level_name(upper_level)}",
-            )
-        return (
-            "CE",
-            lower_level,
-            f"Lower rejection at {level_name(lower_level)}",
+    candidates = []
+    for zone in unique_levels(levels):
+        if "REJECTION" not in (zone.get("allowed_setups") or ["REJECTION", "BREAKOUT"]):
+            continue
+        zl = safe_float(zone.get("zone_low"), safe_float(zone.get("level")))
+        zh = safe_float(zone.get("zone_high"), safe_float(zone.get("level")))
+        if zl is None or zh is None:
+            continue
+        # PE: touch/penetrate resistance, close back below zone, bearish body.
+        upper_ok = (
+            candle["high"] >= zl - MAJOR_LEVEL_TOLERANCE
+            and candle["low"] <= zh + MAJOR_LEVEL_TOLERANCE
+            and candle["close"] < zl
+            and candle["close"] < candle["open"]
+            and candle["upper_wick"] >= rng * REJECTION_WICK_MIN_RANGE_FRACTION
+            and candle["lower_wick"] <= rng * REJECTION_OPPOSITE_WICK_MAX_RANGE_RATIO
         )
-
-    if upper_rejection:
-        return (
-            "PE",
-            upper_level,
-            f"Upper rejection at {level_name(upper_level)}",
+        # CE: touch/penetrate support, close back above zone, bullish body.
+        lower_ok = (
+            candle["low"] <= zh + MAJOR_LEVEL_TOLERANCE
+            and candle["high"] >= zl - MAJOR_LEVEL_TOLERANCE
+            and candle["close"] > zh
+            and candle["close"] > candle["open"]
+            and candle["lower_wick"] >= rng * REJECTION_WICK_MIN_RANGE_FRACTION
+            and candle["upper_wick"] <= rng * REJECTION_OPPOSITE_WICK_MAX_RANGE_RATIO
         )
-
-    if lower_rejection:
-        return (
-            "CE",
-            lower_level,
-            f"Lower rejection at {level_name(lower_level)}",
-        )
-
-    return None, None, "NO_MAJOR_REJECTION"
-
+        if upper_ok:
+            candidates.append((abs(candle["high"] - zl), -safe_float(zone.get("combined_strength"), 0.0), "PE", zone))
+        if lower_ok:
+            candidates.append((abs(candle["low"] - zh), -safe_float(zone.get("combined_strength"), 0.0), "CE", zone))
+    if not candidates:
+        return None, None, "NO_CONFIRMED_ZONE_REJECTION"
+    candidates.sort(key=lambda x: (x[0], x[1]))
+    _, _, side, zone = candidates[0]
+    return side, zone, f"{side} rejection at {level_name(zone)}"
 
 def detect_pullback(
     candle: Dict[str, float],
@@ -517,45 +505,29 @@ def detect_breakout(
     ema9: Optional[float],
     ema20: Optional[float],
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]], str]:
-    """
-    Breakout:
-      - MUST break an actual major level.
-      - EMA is trend context, NOT the breakout level.
-      - bullish breakout = completed candle close above resistance
-      - bearish breakout = completed candle close below support
-    """
-    close = candle["close"]
-    high = candle["high"]
-    low = candle["low"]
-
-    resistance = nearest_major_above(levels, close)
-    support = nearest_major_below(levels, close)
-
-    bullish = False
-    bearish = False
-
-    if resistance:
-        r = safe_float(resistance.get("level"))
-        if r is not None:
-            bullish = close > r + BREAKOUT_BUFFER and high >= r
-
-    if support:
-        s = safe_float(support.get("level"))
-        if s is not None:
-            bearish = close < s - BREAKOUT_BUFFER and low <= s
-
+    """Confirm a completed candle closing beyond the full S/R zone."""
+    bullish = []
+    bearish = []
+    for zone in unique_levels(levels):
+        if "BREAKOUT" not in (zone.get("allowed_setups") or []):
+            continue
+        zl = safe_float(zone.get("zone_low"), safe_float(zone.get("level")))
+        zh = safe_float(zone.get("zone_high"), safe_float(zone.get("level")))
+        if zl is None or zh is None:
+            continue
+        if candle["open"] <= zh and candle["close"] > zh + BREAKOUT_BUFFER:
+            bullish.append(zone)
+        if candle["open"] >= zl and candle["close"] < zl - BREAKOUT_BUFFER:
+            bearish.append(zone)
     if bullish and bearish:
-        # Extremely unusual candle; reject ambiguous breakout.
         return None, None, "AMBIGUOUS_BREAKOUT"
-
     if bullish:
-        return "CE", resistance, f"Bullish breakout of {level_name(resistance)}"
-
+        zone = max(bullish, key=lambda z: safe_float(z.get("zone_high"), 0.0))
+        return "CE", zone, f"Bullish breakout of {level_name(zone)}"
     if bearish:
-        return "PE", support, f"Bearish breakout of {level_name(support)}"
-
-    return None, None, "NO_MAJOR_BREAKOUT"
-
+        zone = min(bearish, key=lambda z: safe_float(z.get("zone_low"), float("inf")))
+        return "PE", zone, f"Bearish breakout of {level_name(zone)}"
+    return None, None, "NO_ZONE_BREAKOUT"
 
 def opposite_wick_pass(
     candle: Dict[str, float],
@@ -893,12 +865,20 @@ def choose_setup(
     # -------------------------
     # CANDLE SIZE GATE
     # -------------------------
-    candle_size_pass = CANDLE_MIN <= candle["range"] <= CANDLE_MAX
+    candle_size_pass = (
+        REJECTION_MIN_RANGE <= candle["range"] <= REJECTION_MAX_RANGE
+        if setup == "Major Rejection"
+        else CANDLE_MIN <= candle["range"] <= CANDLE_MAX
+    )
 
     # -------------------------
     # OPPOSITE WICK GATE
     # -------------------------
-    wick_pass, opposite_wick = opposite_wick_pass(candle, option_type)
+    if setup == "Major Rejection":
+        opposite_wick = candle["lower_wick"] if option_type == "PE" else candle["upper_wick"]
+        wick_pass = opposite_wick <= candle["range"] * REJECTION_OPPOSITE_WICK_MAX_RANGE_RATIO
+    else:
+        wick_pass, opposite_wick = opposite_wick_pass(candle, option_type)
 
     # -------------------------
     # RSI GATE
@@ -952,16 +932,26 @@ def choose_setup(
     # -------------------------
     # RUNWAY GATE
     # -------------------------
-    day_high = safe_float(ind.get("intraday_high"), spot) or spot
-    day_low = safe_float(ind.get("intraday_low"), spot) or spot
-
+    levels_for_runway = get_levels(ind)
     if option_type == "CE":
-        runway = max(0.0, day_high - spot)
+        opposing = []
+        for z in levels_for_runway:
+            edge = safe_float(z.get("zone_low"), safe_float(z.get("level")))
+            if edge is not None and edge > spot:
+                opposing.append((edge, z))
+        opposing.sort(key=lambda x: x[0])
+        runway_zone = opposing[0][1] if opposing else None
+        runway = max(0.0, opposing[0][0] - spot) if opposing else 0.0
     else:
-        runway = max(0.0, spot - day_low)
-
-    runway_pass = runway >= RUNWAY_MIN
-
+        opposing = []
+        for z in levels_for_runway:
+            edge = safe_float(z.get("zone_high"), safe_float(z.get("level")))
+            if edge is not None and edge < spot:
+                opposing.append((edge, z))
+        opposing.sort(key=lambda x: x[0], reverse=True)
+        runway_zone = opposing[0][1] if opposing else None
+        runway = max(0.0, spot - opposing[0][0]) if opposing else 0.0
+    runway_pass = runway_zone is not None and runway >= RUNWAY_MIN
     # -------------------------
     # OI / ORDER-FLOW CONTEXT
     # -------------------------
@@ -1060,8 +1050,9 @@ def choose_setup(
         "contract_flow": contract_flow,
         "failed_gates": failed,
         "spot": spot,
-        "day_high": day_high,
-        "day_low": day_low,
+        "day_high": safe_float(ind.get("intraday_high"), spot),
+        "day_low": safe_float(ind.get("intraday_low"), spot),
+        "runway_zone": runway_zone,
     }
 
 
@@ -1073,74 +1064,36 @@ def calculate_index_risk_levels(
     decision: Dict[str, Any],
     ind: Dict[str, Any],
 ) -> Tuple[Optional[float], Optional[float], str]:
-    """
-    Index-level exit model.
-
-    CE:
-      SL = signal candle low
-      Target = next major resistance above entry
-
-    PE:
-      SL = signal candle high
-      Target = next major support below entry
-
-    If the next major target is not available, use the minimum 15-point
-    runway distance as a fallback target.
-
-    This is paper execution logic only.
-    """
-    candle = decision.get("candle")
-    # The detailed candle is reconstructed from completed_candles.
+    """Use signal-candle stop and the nearest opposing zone edge as target."""
     completed = get_completed_candles(ind)
-    if completed:
-        c = candle_fields(completed[-1])
-    else:
-        c = None
-
+    c = candle_fields(completed[-1]) if completed else None
     spot = safe_float(decision.get("spot"))
     option_type = decision.get("option_type")
-
-    if spot is None or option_type not in ("CE", "PE") or c is None:
+    if spot is None or c is None or option_type not in ("CE", "PE"):
         return None, None, "Cannot calculate index SL/target"
-
     levels = get_levels(ind)
-
     if option_type == "CE":
         index_sl = c["low"]
-        target_level = nearest_major_above(levels, spot)
-        if target_level:
-            index_target = safe_float(target_level.get("level"))
-            target_source = level_name(target_level)
-        else:
-            index_target = spot + RUNWAY_MIN
-            target_source = "15-point fallback"
+        candidates = []
+        for z in levels:
+            edge = safe_float(z.get("zone_low"), safe_float(z.get("level")))
+            if edge is not None and edge > spot:
+                candidates.append((edge, z))
+        candidates.sort(key=lambda x: x[0])
     else:
         index_sl = c["high"]
-        target_level = nearest_major_below(levels, spot)
-        if target_level:
-            index_target = safe_float(target_level.get("level"))
-            target_source = level_name(target_level)
-        else:
-            index_target = spot - RUNWAY_MIN
-            target_source = "15-point fallback"
-
-    if index_target is None:
-        return None, None, "Target unavailable"
-
-    # Ensure target is genuinely in the expected direction.
-    if option_type == "CE" and index_target <= spot:
-        index_target = spot + RUNWAY_MIN
-        target_source = "15-point fallback"
-    elif option_type == "PE" and index_target >= spot:
-        index_target = spot - RUNWAY_MIN
-        target_source = "15-point fallback"
-
-    return float(index_sl), float(index_target), target_source
-
-
-# ============================================================
-# PAPER ENTRY
-# ============================================================
+        candidates = []
+        for z in levels:
+            edge = safe_float(z.get("zone_high"), safe_float(z.get("level")))
+            if edge is not None and edge < spot:
+                candidates.append((edge, z))
+        candidates.sort(key=lambda x: x[0], reverse=True)
+    if not candidates:
+        return None, None, "No opposing S/R zone target"
+    index_target, zone = candidates[0]
+    if abs(index_target - spot) < RUNWAY_MIN:
+        return None, None, "Opposing S/R zone inside minimum runway"
+    return float(index_sl), float(index_target), level_name(zone)
 
 def calculate_quantity(
     wallet: float,
