@@ -849,7 +849,7 @@ def calculate_closed_candle_signal(
     # against the previous 20 completed candles.
     # --------------------------------------------------------
 
-    volume_source = volume_df if volume_df is not None and len(volume_df) >= 22 else df
+    volume_source = df
     volume_window = volume_source["volume"].iloc[-22:-2]
     current_volume = float(volume_source["volume"].iloc[-2] or 0.0)
     vol_avg = float(volume_window.mean() if not volume_window.empty else 0.0)
