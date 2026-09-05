@@ -43,7 +43,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as dtime
 
 import pyotp
 
@@ -58,6 +58,9 @@ logging.basicConfig(
 )
 
 IST = timezone(timedelta(hours=5, minutes=30))
+CONTINUOUS_SESSION_START = dtime(9, 15)
+CONTINUOUS_SESSION_END = dtime(15, 15)
+CAS_SESSION_END = dtime(15, 35)
 
 # ============================================================
 # ENVIRONMENT
@@ -80,20 +83,32 @@ FUTURE_CANDLE_CACHE_FILE = "future_candle_cache.json"
 # TIME / JSON
 # ============================================================
 
-def market_status_now(dt=None):
-    """Simple NSE cash-market session status used by the dashboard/engine.
-    09:15-15:30 IST on weekdays is OPEN; otherwise CLOSED.
-    This is deliberately independent of WebSocket connectivity.
-    """
+def session_type_now(dt=None):
     dt = dt or now_ist()
     if dt.weekday() >= 5:
         return "CLOSED"
-    t = dt.time()
-    from datetime import time as dtime
-    if dtime(9, 15) <= t <= dtime(15, 30):
-        return "OPEN"
+    if CONTINUOUS_SESSION_START <= dt.time() < CONTINUOUS_SESSION_END:
+        return "CONTINUOUS"
+    if CONTINUOUS_SESSION_END <= dt.time() < CAS_SESSION_END:
+        return "CAS"
     return "CLOSED"
 
+
+def market_status_now(dt=None):
+    return "OPEN" if session_type_now(dt) == "CONTINUOUS" else "CLOSED"
+
+
+def is_continuous_timestamp(value):
+    try:
+        dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        dt = dt.replace(tzinfo=IST) if dt.tzinfo is None else dt.astimezone(IST)
+        return dt.weekday() < 5 and CONTINUOUS_SESSION_START <= dt.time() < CONTINUOUS_SESSION_END
+    except Exception:
+        return False
+
+
+def filter_continuous_candles(candles):
+    return [row for row in (valid_candles(candles) or []) if is_continuous_timestamp(row[0])]
 
 def now_ist():
     return datetime.now(IST)
@@ -145,13 +160,13 @@ def load_persisted_candles():
     if isinstance(cached, dict):
         candles = valid_candles(cached.get("candles"))
         if candles:
-            return candles, cached.get("saved_at")
+            return filter_continuous_candles(candles), cached.get("saved_at")
 
     raw = load_json(DATA_RAW_FILE, None)
     if isinstance(raw, dict):
         candles = valid_candles(raw.get("candles"))
         if candles:
-            return candles, raw.get("candle_last_success")
+            return filter_continuous_candles(candles), raw.get("candle_last_success")
 
     return None, None
 
@@ -172,7 +187,7 @@ def save_persisted_candles(candles, saved_at):
 def load_cached_candles_file(path):
     cached = load_json(path, None)
     if isinstance(cached, dict):
-        return valid_candles(cached.get("candles")) or []
+        return filter_continuous_candles(cached.get("candles"))
     return []
 
 
@@ -1099,13 +1114,13 @@ def start_backend_factory():
                     # LIVE SPOT 5-MIN CANDLE
                     # ------------------------------------------------
 
-                    spot_candles = update_live_candle(
-                        spot_candles,
-                        nifty_tick["timestamp"],
-                        spot,
-                        0.0,
-                    )[-300:]
-                    spot_live_candle = spot_candles[-1] if spot_candles else None
+                    if is_continuous_timestamp(nifty_tick["timestamp"]):
+                        spot_candles = update_live_candle(
+                            spot_candles, nifty_tick["timestamp"], spot, 0.0,
+                        )[-300:]
+                        spot_live_candle = spot_candles[-1] if spot_candles else None
+                    else:
+                        spot_live_candle = None
 
                     # ------------------------------------------------
                     # LIVE FUTURES 5-MIN CANDLE
@@ -1114,7 +1129,7 @@ def start_backend_factory():
                     # value. on_data converts it to a non-negative increment.
                     # Maintain the live futures candle here so downstream
                     # engines can use completed futures volume consistently.
-                    if future_tick is not None:
+                    if future_tick is not None and is_continuous_timestamp(future_tick.get("timestamp")):
                         future_price = safe_float(future_tick.get("ltp"))
                         if future_price is not None:
                             future_candles = update_live_candle(
@@ -1195,7 +1210,7 @@ def start_backend_factory():
                                 and res.get("data")
                             ):
 
-                                fresh = valid_candles(
+                                fresh = filter_continuous_candles(
                                     res.get("data")
                                 )
 
@@ -1235,7 +1250,7 @@ def start_backend_factory():
                                                 "todate": to_d,
                                             })
                                             if fres and fres.get("status") and fres.get("data"):
-                                                fh = valid_candles(fres.get("data"))
+                                                fh = filter_continuous_candles(fres.get("data"))
                                                 if fh:
                                                     future_candles = fh[-300:]
                                                     save_cached_candles_file(FUTURE_CANDLE_CACHE_FILE, future_candles, now_dt.isoformat())
@@ -1274,13 +1289,11 @@ def start_backend_factory():
                     # MERGED CANDLES
                     # ------------------------------------------------
 
-                    merged_spot_candles = (
+                    merged_spot_candles = filter_continuous_candles(
                         merge_historical_with_live(
-                            spot_candles,
-                            spot_live_candle,
-                            max_candles=300,
+                            spot_candles, spot_live_candle, max_candles=300,
                         )
-                    )
+                    )[-300:]
 
                     # ------------------------------------------------
                     # READ DESIRED OPTION FROM INDICATOR OUTPUT
@@ -1631,8 +1644,10 @@ def start_backend_factory():
 
                         # Market status is clock-based, not WebSocket-based.
                         # A connected socket after 15:30 must still show CLOSED.
-                        "market_status":
-                            market_status_now(now_dt),
+                        "market_status": market_status_now(now_dt),
+                        "session_type": session_type_now(now_dt),
+                        "new_entries_allowed": session_type_now(now_dt) == "CONTINUOUS",
+                        "is_cas_session": session_type_now(now_dt) == "CAS",
                         "worker_status":
                             "RUNNING" if websocket_connected else "DISCONNECTED",
 
