@@ -174,8 +174,13 @@ def quote_age_seconds(timestamp: Any) -> float:
 
 
 def market_open_from_raw(raw: Dict[str, Any]) -> bool:
-    return str(raw.get("market_status", "")).upper() == "OPEN"
-
+    """Permit engine execution only during continuous trading, never CAS."""
+    return (
+        str(raw.get("market_status", "")).upper() == "OPEN"
+        and str(raw.get("session_type", "")).upper() == "CONTINUOUS"
+        and bool(raw.get("new_entries_allowed", False))
+        and not bool(raw.get("is_cas_session", False))
+    )
 
 # ============================================================
 # LEDGER
@@ -1439,6 +1444,9 @@ def publish_output(
         "last_update_ist": now_iso(),
 
         "market_status": raw.get("market_status"),
+        "session_type": raw.get("session_type"),
+        "new_entries_allowed": bool(raw.get("new_entries_allowed", False)),
+        "is_cas_session": bool(raw.get("is_cas_session", False)),
         "worker_status": raw.get("worker_status"),
         "live_spot": raw.get("live_spot"),
 
@@ -1565,6 +1573,18 @@ def process_once(
     # ========================================================
     # 2. NO ACTIVE TRADE — ENTRY DECISION
     # ========================================================
+
+    # Hard CAS/out-of-session entry guard. This protects against stale signals.
+    if not market_open_from_raw(raw):
+        blocked = {
+            "ready": False,
+            "setup": "NONE",
+            "reason": "NEW_ENTRIES_BLOCKED_OUTSIDE_CONTINUOUS_SESSION",
+            "paper_entry_allowed": False,
+            "session_type": raw.get("session_type"),
+        }
+        publish_output(raw, ind, structure, ledger, blocked, None)
+        return ledger, state
 
     decision = choose_setup(
         ind,
