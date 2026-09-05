@@ -52,7 +52,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as dtime
 
 import numpy as np
 import pandas as pd
@@ -99,6 +99,8 @@ TARGET_BUFFER = 5.0
 LEVEL_MERGE_DISTANCE = 20.0
 MORNING_BOX_START = "09:15"
 MORNING_BOX_END = "09:30"
+CONTINUOUS_SESSION_START = dtime(9, 15)
+CONTINUOUS_SESSION_END = dtime(15, 15)
 
 
 # ============================================================
@@ -202,6 +204,17 @@ def calculate_tv_rsi(series, period=14):
 # DATAFRAME
 # ============================================================
 
+def continuous_session_only(df):
+    if df is None or df.empty:
+        return df
+    result = df.copy()
+    dt = pd.to_datetime(result["datetime"], errors="coerce")
+    result = result.loc[dt.notna()].copy()
+    dt = pd.to_datetime(result["datetime"], errors="coerce")
+    times = dt.dt.time
+    return result.loc[(dt.dt.weekday < 5) & (times >= CONTINUOUS_SESSION_START) & (times < CONTINUOUS_SESSION_END)].reset_index(drop=True)
+
+
 def build_dataframe(candles):
     if not isinstance(candles, list):
         return pd.DataFrame()
@@ -283,9 +296,7 @@ def build_dataframe(candles):
         .reset_index(drop=True)
     )
 
-    return df
-
-
+    return continuous_session_only(df)
 # ============================================================
 # INDICATORS
 # ============================================================
@@ -1433,6 +1444,9 @@ def start_indicator_engine():
                     raw.get(
                         "future_live_candle"
                     ),
+                "session_type": raw.get("session_type"),
+                "new_entries_allowed": bool(raw.get("new_entries_allowed", False)),
+                "is_cas_session": bool(raw.get("is_cas_session", False)),
 
             }
 
