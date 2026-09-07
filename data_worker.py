@@ -1256,7 +1256,11 @@ def start_backend_factory():
                                         len(spot_candles),
                                     )
 
-                                    if future_contract and not future_candles:
+                                    if (
+                                        future_contract
+                                        and len(future_candles) < 22
+                                    ):
+                                        time.sleep(1.0)
                                         try:
                                             fres = api.getCandleData(
                                                 {
