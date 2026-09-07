@@ -1162,9 +1162,13 @@ def start_backend_factory():
                     ).total_seconds()
 
                     # REST candle backfill is attempted once when the process
-                    # starts without a usable cache. Live candles are then
-                    # maintained from the WebSocket without repeated REST calls.
-                    candle_due = historical_backfill_needed and not historical_backfill_attempted
+                    # starts without a usable cache. A seven-day window covers
+                    # weekends and most exchange holidays. CAS candles are
+                    # removed by filter_continuous_candles().
+                    candle_due = (
+                        historical_backfill_needed
+                        and not historical_backfill_attempted
+                    )
 
                     retry_allowed = (
                         seconds_since_attempt
@@ -1174,21 +1178,14 @@ def start_backend_factory():
                     if candle_due and retry_allowed:
 
                         historical_backfill_attempted = True
-                                           if candle_due and retry_allowed:
-
-                        historical_backfill_attempted = True
                         last_candle_attempt = now_dt
 
-                        # Fetch enough history to cover weekends
-                        # and exchange holidays.
-                        # CAS candles are removed separately by
-                        # filter_continuous_candles().
                         history_start = (
                             now_dt - timedelta(days=7)
                         )
 
                         from_d = history_start.strftime(
-                            "%Y-%m-%d 09:15"
+                            "%Y-%m-%d %H:%M"
                         )
 
                         to_d = now_dt.strftime(
@@ -1207,17 +1204,11 @@ def start_backend_factory():
                                 "Requesting historical 5-min spot candles..."
                             )
 
-                            logging.info(
-                                "Requesting historical 5-min spot candles..."
-                            )
-
                             res = api.getCandleData(
                                 {
                                     "exchange": "NSE",
-                                    "symboltoken":
-                                        NIFTY_SPOT_TOKEN,
-                                    "interval":
-                                        "FIVE_MINUTE",
+                                    "symboltoken": NIFTY_SPOT_TOKEN,
+                                    "interval": "FIVE_MINUTE",
                                     "fromdate": from_d,
                                     "todate": to_d,
                                 }
@@ -1235,9 +1226,15 @@ def start_backend_factory():
 
                                 if fresh:
 
-                                    spot_candles = fresh
+                                    spot_candles = fresh[-300:]
                                     historical_backfill_needed = False
-                                    if spot_live_candle:
+
+                                    if (
+                                        spot_live_candle
+                                        and is_continuous_timestamp(
+                                            nifty_tick["timestamp"]
+                                        )
+                                    ):
                                         spot_candles = update_live_candle(
                                             spot_candles,
                                             nifty_tick["timestamp"],
@@ -1261,21 +1258,50 @@ def start_backend_factory():
 
                                     if future_contract and not future_candles:
                                         try:
-                                            fres = api.getCandleData({
-                                                "exchange": "NFO",
-                                                "symboltoken": str(future_contract["symboltoken"]),
-                                                "interval": "FIVE_MINUTE",
-                                                "fromdate": from_d,
-                                                "todate": to_d,
-                                            })
-                                            if fres and fres.get("status") and fres.get("data"):
-                                                fh = filter_continuous_candles(fres.get("data"))
+                                            fres = api.getCandleData(
+                                                {
+                                                    "exchange": "NFO",
+                                                    "symboltoken": str(
+                                                        future_contract[
+                                                            "symboltoken"
+                                                        ]
+                                                    ),
+                                                    "interval": "FIVE_MINUTE",
+                                                    "fromdate": from_d,
+                                                    "todate": to_d,
+                                                }
+                                            )
+
+                                            if (
+                                                fres
+                                                and fres.get("status")
+                                                and fres.get("data")
+                                            ):
+                                                fh = filter_continuous_candles(
+                                                    fres.get("data")
+                                                )
+
                                                 if fh:
                                                     future_candles = fh[-300:]
-                                                    save_cached_candles_file(FUTURE_CANDLE_CACHE_FILE, future_candles, now_dt.isoformat())
-                                                    logging.info("NIFTY futures candles updated: %d", len(future_candles))
+
+                                                    save_cached_candles_file(
+                                                        FUTURE_CANDLE_CACHE_FILE,
+                                                        future_candles,
+                                                        now_dt.isoformat(),
+                                                    )
+
+                                                    logging.info(
+                                                        "NIFTY futures candles "
+                                                        "updated: %d",
+                                                        len(future_candles),
+                                                    )
+
                                         except Exception as exc:
-                                            logging.warning("Historical NIFTY futures candle API error: %s", exc)
+                                            logging.warning(
+                                                "Historical NIFTY futures "
+                                                "candle API error: %s",
+                                                exc,
+                                            )
 
                                 else:
                                     historical_backfill_attempted = False
@@ -1292,13 +1318,11 @@ def start_backend_factory():
                                 )
 
                         except Exception as exc:
-
                             logging.warning(
                                 "Historical candle API error: %s",
                                 exc,
                             )
                             historical_backfill_attempted = False
-
                             candle_retry_delay = min(
                                 candle_retry_delay * 2,
                                 MAX_CANDLE_RETRY,
