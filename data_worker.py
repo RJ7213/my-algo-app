@@ -1177,16 +1177,15 @@ def start_backend_factory():
                         last_candle_attempt = now_dt
 
                         from_d = (
-                            now_dt - timedelta(days=2)
-                        ).strftime(
-                            "%Y-%m-%d %H:%M"
-                        )
+    now_dt - timedelta(days=2)
+).strftime(
+    "%Y-%m-%d %H:%M"
+)
 
-                        to_d = now_dt.strftime(
-                            "%Y-%m-%d %H:%M"
-                        )
-
-                        try:
+to_d = now_dt.strftime(
+    "%Y-%m-%d %H:%M"
+)
+``
 
                             logging.info(
                                 "Requesting historical 5-min spot candles..."
