@@ -1174,18 +1174,38 @@ def start_backend_factory():
                     if candle_due and retry_allowed:
 
                         historical_backfill_attempted = True
+                                           if candle_due and retry_allowed:
+
+                        historical_backfill_attempted = True
                         last_candle_attempt = now_dt
 
-                        from_d = (
-    now_dt - timedelta(days=2)
-).strftime(
-    "%Y-%m-%d %H:%M"
-)
+                        # Fetch enough history to cover weekends
+                        # and exchange holidays.
+                        # CAS candles are removed separately by
+                        # filter_continuous_candles().
+                        history_start = (
+                            now_dt - timedelta(days=7)
+                        )
 
-to_d = now_dt.strftime(
-    "%Y-%m-%d %H:%M"
-)
-``
+                        from_d = history_start.strftime(
+                            "%Y-%m-%d 09:15"
+                        )
+
+                        to_d = now_dt.strftime(
+                            "%Y-%m-%d %H:%M"
+                        )
+
+                        logging.info(
+                            "Historical candle window: %s to %s",
+                            from_d,
+                            to_d,
+                        )
+
+                        try:
+
+                            logging.info(
+                                "Requesting historical 5-min spot candles..."
+                            )
 
                             logging.info(
                                 "Requesting historical 5-min spot candles..."
