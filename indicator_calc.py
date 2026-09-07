@@ -906,17 +906,44 @@ def calculate_closed_candle_signal(
     # --------------------------------------------------------
     # Volume
     #
-    # Strategy volume comes from NIFTY spot candle data if
-    # available. The worker also publishes FUTURE live volume.
-    #
-    # For the entry gate, use the completed candle's volume
-    # against the previous 20 completed candles.
+    # NIFTY Spot is an index and its candle volume is zero.
+    # Use completed NIFTY Futures candles for the volume gate.
     # --------------------------------------------------------
+    volume_source = (
+        volume_df
+        if (
+            volume_df is not None
+            and not volume_df.empty
+            and len(volume_df) >= 22
+        )
+        else None
+    )
 
-    volume_source = df
-    volume_window = volume_source["volume"].iloc[-22:-2]
-    current_volume = float(volume_source["volume"].iloc[-2] or 0.0)
-    vol_avg = float(volume_window.mean() if not volume_window.empty else 0.0)
+    if volume_source is not None:
+        volume_window = pd.to_numeric(
+            volume_source["volume"].iloc[-22:-2],
+            errors="coerce",
+        )
+        current_volume_raw = pd.to_numeric(
+            pd.Series([volume_source["volume"].iloc[-2]]),
+            errors="coerce",
+        ).iloc[0]
+        current_volume = (
+            float(current_volume_raw)
+            if not pd.isna(current_volume_raw)
+            else 0.0
+        )
+        positive_window = volume_window[
+            volume_window > 0
+        ]
+        vol_avg = (
+            float(positive_window.mean())
+            if not positive_window.empty
+            else 0.0
+        )
+    else:
+        current_volume = 0.0
+        vol_avg = 0.0
 
     if current_volume > 0 and vol_avg > 0:
         vol_ratio = round(
@@ -930,10 +957,12 @@ def calculate_closed_candle_signal(
 
     vol_status = (
         "PASS"
-        if vol_data_valid and vol_ratio >= MIN_VOLUME_RATIO
+        if (
+            vol_data_valid
+            and vol_ratio >= MIN_VOLUME_RATIO
+        )
         else "FAIL"
     )
-
     # --------------------------------------------------------
     # RUNWAY
     # --------------------------------------------------------
@@ -1229,7 +1258,7 @@ def start_indicator_engine():
                     "signal_rsi": None,
                     "signal_ema9": None,
                     "signal_ema20": None,
-                    "signal_volume_ratio": 0.0,
+                    "signal_volume_ratio": None,
                     "completed_candles": [],
                     "level_engine": {"levels": [], "support": None, "resistance": None},
                     "support": None,
