@@ -6,5 +6,7 @@ create table if not exists public.paper_persistence (
 
 alter table public.paper_persistence enable row level security;
 
--- The Python server uses SUPABASE_SERVICE_ROLE_KEY, so no public policy is needed.
--- Do NOT put the service-role key in frontend code or expose it publicly.
+grant all on table public.paper_persistence to service_role;
+
+-- The Python server uses SUPABASE_SERVICE_ROLE_KEY.
+-- Never place the service-role key in Streamlit/browser code.
