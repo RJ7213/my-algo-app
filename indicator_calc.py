@@ -1000,13 +1000,33 @@ def calculate_closed_candle_signal(
     # FINAL GATE
     # --------------------------------------------------------
 
-    signal_gate = (
-        otype != "NONE"
-        and rsi_status == "PASS"
-        and ema_status == "PASS"
-        and vol_status == "PASS"
-        and runway_status == "PASS"
-    )
+    --------------------------------------------------------
+2
+# FINAL GATE
+3
+#
+4
+# Volume is advisory only.
+5
+# Volume is still calculated, displayed and stored
+6
+# in history, but it does not block entries.
+7
+# --------------------------------------------------------
+8
+ 
+9
+signal_gate = (
+10
+otype != "NONE"
+11
+and rsi_status == "PASS"
+12
+and ema_status == "PASS"
+13
+and runway_status == "PASS"
+14
+)
 
     final_trigger = (
         signal_gate
