@@ -807,8 +807,10 @@ def choose_setup(
     if str(ind.get("ema_status") or "FAIL") != "PASS":
         technical_failed.append("EMA")
 
-    if str(ind.get("vol_status") or "FAIL") != "PASS":
-        technical_failed.append("VOLUME")
+    # VOLUME IS ADVISORY ONLY.
+    # It is calculated/displayed/stored, but it must NOT block entry.
+    # Do not append VOLUME to technical_failed.
+    volume_advisory = str(ind.get("vol_status") or "FAIL")
 
     if str(ind.get("runway_status") or "FAIL") != "PASS":
         technical_failed.append("RUNWAY")
