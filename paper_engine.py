@@ -70,7 +70,7 @@ MAX_OPTION_QUOTE_AGE_SEC = float(os.getenv("MAX_OPTION_QUOTE_AGE_SEC", "5"))
 
 # Technical gates.
 VOLUME_PASS_RATIO = 1.20
-RUNWAY_MIN = 30.0
+RUNWAY_MIN = 15.0
 CANDLE_MIN = 12.0
 CANDLE_MAX = 25.0
 OPPOSITE_WICK_BODY_MAX = 0.05
@@ -730,12 +730,14 @@ def choose_setup(
     """
     FINAL STRATEGY DECISION.
 
-    Priority:
-      1. Major Rejection
-      2. Pullback
-      3. Breakout
+    Technical setup/gates are owned by indicator_calc.py.
+    This engine only:
+      1. consumes the completed-candle technical signal,
+      2. applies OI/order-flow confirmation,
+      3. prepares the paper-execution decision.
 
-    All gates are evaluated after the setup is identified.
+    This prevents paper_engine.py from running a second, conflicting
+    Major Rejection / Pullback / Breakout strategy engine.
     """
     completed = get_completed_candles(ind)
     if not completed:
@@ -743,309 +745,206 @@ def choose_setup(
             "ready": False,
             "reason": "No completed candle",
             "setup": "NONE",
+            "trade_type": "NONE",
+            "option_type": "NONE",
+            "option_strike": nearest_strike(spot),
+            "candle_time": "",
+            "failed_gates": ["CANDLE"],
         }
 
     candle = candle_fields(completed[-1])
     candle_time = str(
-        completed[-1].get("date")
+        ind.get("signal_candle_time")
+        or completed[-1].get("date")
         or completed[-1].get("datetime")
         or ""
     )
 
-    ema9 = safe_float(ind.get("ema9"), ind.get("live_ema9"))
-    ema20 = safe_float(ind.get("ema20"), ind.get("live_ema20"))
-    rsi = safe_float(ind.get("rsi"), ind.get("live_rsi"))
+    setup = str(ind.get("strategy_used") or "NONE")
+    option_type = str(
+        ind.get("otype")
+        or ind.get("option_type")
+        or "NONE"
+    ).upper()
 
-    # The indicator engine publishes live indicators plus closed-candle copies.
-    signal_ema9 = safe_float(ind.get("signal_ema9"), ema9)
-    signal_ema20 = safe_float(ind.get("signal_ema20"), ema20)
-    signal_rsi = safe_float(ind.get("signal_rsi"), rsi)
+    if option_type not in ("CE", "PE"):
+        option_type = "NONE"
 
-    if signal_ema9 is None:
-        signal_ema9 = ema9
-    if signal_ema20 is None:
-        signal_ema20 = ema20
-    if signal_rsi is None:
-        signal_rsi = rsi
-
-    levels = get_levels(ind)
-
-    # -------------------------
-    # SETUP DETECTION
-    # -------------------------
-    option_type, rejection_level, rejection_reason = detect_major_rejection(
-        candle, levels
+    trade_type = str(
+        ind.get("trade_type")
+        or (f"{option_type}_BUY" if option_type != "NONE" else "NONE")
     )
 
-    setup = "NONE"
-    setup_level = rejection_level
-    setup_reason = rejection_reason
-
-    if option_type:
-        setup = "Major Rejection"
-    else:
-        option_type, pullback_reason = detect_pullback(
-            candle,
-            spot,
-            signal_ema9,
-        )
-        if option_type:
-            setup = "Pullback"
-            setup_level = nearest_major_to_price(levels, candle["close"])
-            setup_reason = pullback_reason
-        else:
-            option_type, breakout_level, breakout_reason = detect_breakout(
-                candle,
-                levels,
-                spot,
-                signal_ema9,
-                signal_ema20,
-            )
-            if option_type:
-                setup = "Breakout"
-                setup_level = breakout_level
-                setup_reason = breakout_reason
-
-    if not option_type:
-        support_level = None
-        resistance_level = None
-        for lvl in levels:
-            value = safe_float(lvl.get("level"))
-            if value is None:
-                continue
-            if value < spot and (support_level is None or value > support_level):
-                support_level = value
-            if value > spot and (resistance_level is None or value < resistance_level):
-                resistance_level = value
-
-        day_high = safe_float(ind.get("intraday_high"), spot) or spot
-        day_low = safe_float(ind.get("intraday_low"), spot) or spot
-        ce_runway = max(0.0, day_high - spot)
-        pe_runway = max(0.0, spot - day_low)
-        display_runway = max(ce_runway, pe_runway)
-        no_setup_volume_ratio = safe_float(
-            ind.get("signal_volume_ratio"),
-            safe_float(ind.get("volume_ratio"), 0.0),
-        ) or 0.0
-        return {
-            "ready": False,
-            "reason": "No valid Major Rejection / Pullback / Breakout setup",
-            "setup": "NONE",
-            "trade_type": "NONE",
-            "option_type": "NONE",
-            "option_strike": nearest_strike(spot),
-            "candle_time": candle_time,
-            "candle": candle,
-            "rsi": signal_rsi,
-            "ema9": signal_ema9,
-            "ema20": signal_ema20,
-            "rsi_pass": False,
-            "ema_pass": False,
-            "volume_ratio": no_setup_volume_ratio,
-            "volume_pass": no_setup_volume_ratio >= VOLUME_PASS_RATIO,
-            "runway": display_runway,
-            "runway_pass": display_runway >= RUNWAY_MIN,
-            "ce_runway": ce_runway,
-            "pe_runway": pe_runway,
-            "candle_range": candle.get("range", 0.0),
-            "candle_body": candle.get("body", 0.0),
-            "upper_wick": candle.get("upper_wick", 0.0),
-            "lower_wick": candle.get("lower_wick", 0.0),
-            "opposite_wick": 0.0,
-            "wick_pass": False,
-            "candle_size_pass": CANDLE_MIN <= candle.get("range", 0.0) <= CANDLE_MAX,
-            "structure_pass": False,
-            "oi_state": "NO_DATA",
-            "oi_reason": "No setup / awaiting structure",
-            "flow_state": "NO_DATA",
-            "flow_reason": "No setup / awaiting structure",
-            "failed_gates": ["SETUP"],
-            "support": support_level,
-            "resistance": resistance_level,
-            "spot": spot,
-            "day_high": day_high,
-            "day_low": day_low,
-        }
-
-    # -------------------------
-    # CANDLE SIZE GATE
-    # -------------------------
-    candle_size_pass = (
-        REJECTION_MIN_RANGE <= candle["range"] <= REJECTION_MAX_RANGE
-        if setup == "Major Rejection"
-        else CANDLE_MIN <= candle["range"] <= CANDLE_MAX
+    signal_rsi = safe_float(
+        ind.get("signal_rsi"),
+        safe_float(ind.get("rsi_v"), safe_float(ind.get("rsi"))),
+    )
+    signal_ema9 = safe_float(
+        ind.get("signal_ema9"),
+        safe_float(ind.get("ema9")),
+    )
+    signal_ema20 = safe_float(
+        ind.get("signal_ema20"),
+        safe_float(ind.get("ema20")),
     )
 
-    # -------------------------
-    # OPPOSITE WICK GATE
-    # -------------------------
-    if setup == "Major Rejection":
-        opposite_wick = candle["lower_wick"] if option_type == "PE" else candle["upper_wick"]
-        wick_pass = opposite_wick <= candle["range"] * REJECTION_OPPOSITE_WICK_MAX_RANGE_RATIO
-    else:
-        wick_pass, opposite_wick = opposite_wick_pass(candle, option_type)
-
-    # -------------------------
-    # RSI GATE
-    # -------------------------
-    if signal_rsi is None:
-        rsi_pass = False
-        rsi_reason = "RSI unavailable"
-    elif setup == "Major Rejection":
-        # Rejection is structurally validated; retain prior strategy behavior:
-        # RSI gate is considered passed for a true major rejection.
-        rsi_pass = True
-        rsi_reason = "Major rejection RSI gate"
-    elif setup == "Pullback":
-        rsi_pass = 45.0 <= signal_rsi <= 55.0
-        rsi_reason = "Pullback RSI 45-55"
-    else:
-        rsi_pass = signal_rsi >= 60.0 if option_type == "CE" else signal_rsi <= 40.0
-        rsi_reason = "Breakout RSI directional threshold"
-
-    # -------------------------
-    # EMA GATE
-    # -------------------------
-    if signal_ema9 is None or signal_ema20 is None:
-        ema_pass = False
-        ema_reason = "EMA unavailable"
-    elif setup == "Pullback":
-        ema_pass = abs(spot - signal_ema9) <= PULLBACK_EMA_TOLERANCE
-        ema_reason = "Pullback within 15 points of EMA9"
-    elif setup == "Breakout":
-        # EMA is trend context only; actual breakout level is separate.
-        if option_type == "CE":
-            ema_pass = signal_ema9 >= signal_ema20
-            ema_reason = "Bullish EMA9 >= EMA20"
-        else:
-            ema_pass = signal_ema9 <= signal_ema20
-            ema_reason = "Bearish EMA9 <= EMA20"
-    else:
-        # Rejection uses major-level structure, while EMA is a context gate.
-        ema_pass = True
-        ema_reason = "Major rejection structural gate"
-
-    # -------------------------
-    # VOLUME GATE
-    # -------------------------
     volume_ratio = safe_float(
         ind.get("signal_volume_ratio"),
         safe_float(ind.get("volume_ratio"), 0.0),
     ) or 0.0
-    volume_pass = volume_ratio >= VOLUME_PASS_RATIO
 
-    # -------------------------
-    # RUNWAY GATE
-    # -------------------------
-    levels_for_runway = get_levels(ind)
-    if option_type == "CE":
-        opposing = []
-        for z in levels_for_runway:
-            edge = safe_float(z.get("zone_low"), safe_float(z.get("level")))
-            if edge is not None and edge > spot:
-                opposing.append((edge, z))
-        opposing.sort(key=lambda x: x[0])
-        runway_zone = opposing[0][1] if opposing else None
-        runway = max(0.0, opposing[0][0] - spot) if opposing else 0.0
+    # Rebuild the technical final gate from indicator_calc output.
+    # Do NOT use signal_triggered because indicator_calc intentionally
+    # suppresses repeated triggers on the same completed candle.
+    technical_failed: List[str] = []
+
+    if option_type == "NONE":
+        technical_failed.append("SETUP")
+
+    if str(ind.get("rsi_status") or "FAIL") != "PASS":
+        technical_failed.append("RSI")
+
+    if str(ind.get("ema_status") or "FAIL") != "PASS":
+        technical_failed.append("EMA")
+
+    if str(ind.get("vol_status") or "FAIL") != "PASS":
+        technical_failed.append("VOLUME")
+
+    if str(ind.get("runway_status") or "FAIL") != "PASS":
+        technical_failed.append("RUNWAY")
+
+    candle_size_pass = bool(
+        ind.get(
+            "candle_size_valid",
+            CANDLE_MIN <= candle.get("range", 0.0) <= CANDLE_MAX,
+        )
+    )
+
+    wick_pass = bool(
+        ind.get(
+            "candle_confirmed",
+            False,
+        )
+    )
+
+    if not candle_size_pass:
+        technical_failed.append("CANDLE_SIZE")
+
+    if not wick_pass:
+        technical_failed.append("OPPOSITE_WICK")
+
+    technical_ready = not technical_failed
+
+    # ------------------------------------------------------------
+    # OI / ORDER-FLOW confirmation
+    # ------------------------------------------------------------
+    if option_type in ("CE", "PE"):
+        oi_state, oi_reason, oi_details = oi_level_confirmation(
+            structure,
+            option_type,
+            spot,
+        )
+
+        strike = int(
+            safe_int(
+                ind.get("option_strike"),
+                nearest_strike(spot),
+            )
+            or nearest_strike(spot)
+        )
+
+        flow_state, flow_reason, contract_flow = selected_contract_flow(
+            structure,
+            strike,
+            option_type,
+        )
     else:
-        opposing = []
-        for z in levels_for_runway:
-            edge = safe_float(z.get("zone_high"), safe_float(z.get("level")))
-            if edge is not None and edge < spot:
-                opposing.append((edge, z))
-        opposing.sort(key=lambda x: x[0], reverse=True)
-        runway_zone = opposing[0][1] if opposing else None
-        runway = max(0.0, spot - opposing[0][0]) if opposing else 0.0
-    runway_pass = runway_zone is not None and runway >= RUNWAY_MIN
-    # -------------------------
-    # OI / ORDER-FLOW CONTEXT
-    # -------------------------
-    oi_state, oi_reason, oi_details = oi_level_confirmation(
-        structure,
-        option_type,
-        spot,
-    )
+        oi_state = "NO_DATA"
+        oi_reason = "No valid technical setup"
+        oi_details = {}
+        strike = nearest_strike(spot)
+        flow_state = "NO_DATA"
+        flow_reason = "No valid technical setup"
+        contract_flow = {}
 
-    strike = nearest_strike(spot)
-    flow_state, flow_reason, contract_flow = selected_contract_flow(
-        structure,
-        strike,
-        option_type,
-    )
-
-    # Market structure is a confirmation gate, but does not replace
-    # the technical setup gates.
     structure_pass = (
-        oi_state != "OPPOSING"
+        option_type in ("CE", "PE")
+        and oi_state != "OPPOSING"
         and flow_state != "OPPOSING"
     )
 
-    # -------------------------
-    # FINAL GATE
-    # -------------------------
-    failed: List[str] = []
+    failed = list(technical_failed)
 
-    if not rsi_pass:
-        failed.append("RSI")
-    if not ema_pass:
-        failed.append("EMA")
-    if not volume_pass:
-        failed.append("VOLUME")
-    if not runway_pass:
-        failed.append("RUNWAY")
-    if not candle_size_pass:
-        failed.append("CANDLE_SIZE")
-    if not wick_pass:
-        failed.append("OPPOSITE_WICK")
-    if not structure_pass:
+    if option_type in ("CE", "PE") and not structure_pass:
         failed.append("OI_ORDER_FLOW")
 
-    ready = not failed
+    ready = (
+        technical_ready
+        and structure_pass
+    )
 
     if ready:
         reason = (
-            f"SIGNAL READY | {setup} | {option_type}_BUY | "
-            f"{setup_reason} | "
+            f"SIGNAL READY | {setup} | {trade_type} | "
             f"RSI={signal_rsi:.2f} | "
             f"VOL={volume_ratio:.2f}x | "
-            f"RUNWAY={runway:.1f} | "
+            f"RUNWAY={safe_float(ind.get('run_df'), 0.0) or 0.0:.1f} | "
             f"OI={oi_state} | FLOW={flow_state}"
         )
     else:
         reason = (
             f"LOCKED | {setup} | "
-            f"Failed: {', '.join(failed)} | "
-            f"{setup_reason}"
+            f"Failed: {', '.join(failed) if failed else 'SETUP'} | "
+            f"{ind.get('algo_reason', '')}"
         )
+
+    setup_level = ind.get("setup_level")
+    if setup_level is None:
+        setup_level = ind.get("psy_level")
 
     return {
         "ready": ready,
         "setup": setup,
-        "trade_type": f"{option_type}_BUY",
+        "trade_type": trade_type,
         "option_type": option_type,
         "option_strike": strike,
         "candle_time": candle_time,
         "reason": reason,
-        "setup_reason": setup_reason,
+        "setup_reason": str(
+            ind.get("algo_reason")
+            or ind.get("reason")
+            or ""
+        ),
         "setup_level": setup_level,
+
         "rsi": signal_rsi,
         "ema9": signal_ema9,
         "ema20": signal_ema20,
-        "rsi_pass": rsi_pass,
-        "rsi_reason": rsi_reason,
-        "ema_pass": ema_pass,
-        "ema_reason": ema_reason,
+        "rsi_pass": str(ind.get("rsi_status") or "FAIL") == "PASS",
+        "rsi_reason": "indicator_calc.py",
+        "ema_pass": str(ind.get("ema_status") or "FAIL") == "PASS",
+        "ema_reason": "indicator_calc.py",
+
         "volume_ratio": volume_ratio,
-        "volume_pass": volume_pass,
-        "runway": runway,
-        "runway_pass": runway_pass,
-        "candle_range": candle["range"],
-        "candle_body": candle["body"],
-        "upper_wick": candle["upper_wick"],
-        "lower_wick": candle["lower_wick"],
-        "opposite_wick": opposite_wick,
+        "volume_pass": str(ind.get("vol_status") or "FAIL") == "PASS",
+
+        "runway": safe_float(ind.get("run_df"), 0.0) or 0.0,
+        "runway_pass": str(ind.get("runway_status") or "FAIL") == "PASS",
+
+        "candle_range": candle.get("range", 0.0),
+        "candle_body": candle.get("body", 0.0),
+        "upper_wick": candle.get("upper_wick", 0.0),
+        "lower_wick": candle.get("lower_wick", 0.0),
+        "opposite_wick": (
+            candle.get("lower_wick", 0.0)
+            if option_type == "PE"
+            else candle.get("upper_wick", 0.0)
+        ),
         "wick_pass": wick_pass,
         "candle_size_pass": candle_size_pass,
+
+        "technical_ready": technical_ready,
+        "technical_failed_gates": technical_failed,
         "structure_pass": structure_pass,
         "oi_state": oi_state,
         "oi_reason": oi_reason,
@@ -1054,16 +953,12 @@ def choose_setup(
         "flow_reason": flow_reason,
         "contract_flow": contract_flow,
         "failed_gates": failed,
+
         "spot": spot,
         "day_high": safe_float(ind.get("intraday_high"), spot),
         "day_low": safe_float(ind.get("intraday_low"), spot),
-        "runway_zone": runway_zone,
+        "runway_zone": None,
     }
-
-
-# ============================================================
-# INDEX STOP / TARGET
-# ============================================================
 
 def calculate_index_risk_levels(
     decision: Dict[str, Any],
@@ -1603,12 +1498,13 @@ def process_once(
         publish_output(raw, ind, structure, ledger, decision, None)
         return ledger, state
 
-    # Even a locked candle is marked processed, so the same candle
-    # cannot repeatedly trigger expensive entry checks.
-    state["last_entry_candle"] = candle_time
-    state["last_processed_candle"] = candle_time
-
+    # A technically/structurally locked candle can be marked processed.
+    # A READY candle is NOT marked processed until an actual fresh option
+    # quote is available and the paper trade is successfully created.
+    # This allows the engine to retry a missing/stale option quote.
     if not decision.get("ready"):
+        state["last_entry_candle"] = candle_time
+        state["last_processed_candle"] = candle_time
         save_state(state)
         save_ledger(ledger)
         publish_output(raw, ind, structure, ledger, decision, None)
@@ -1664,6 +1560,8 @@ def process_once(
 
         ledger["trades"].append(trade)
         state["last_entry_signal_key"] = signal_key
+        state["last_entry_candle"] = candle_time
+        state["last_processed_candle"] = candle_time
 
         save_ledger(ledger, force_remote=True)
         save_state(state, force_remote=True)
