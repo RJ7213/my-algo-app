@@ -1042,10 +1042,57 @@ def calculate_closed_candle_signal(
         and runway_status == "PASS"
     )
 
-    # Keep the legacy output name used by the engine.
-    # The previous repair removed final_trigger but the return block
-    # still expects it.
-    final_trigger = signal_gate
+    # Candle size and opposite-wick are part of the legacy indicator
+    # trigger. Their HARD/SOFT/OFF enforcement is handled by paper_engine.
+    final_trigger = (
+        signal_gate
+        and is_candle_size_valid
+        and candle_confirmed
+    )
+
+    # --------------------------------------------------------
+    # Reason
+    # --------------------------------------------------------
+
+    if not signal_gate:
+        failed = []
+
+        if otype == "NONE":
+            failed.append("SETUP")
+        if rsi_status != "PASS":
+            failed.append("RSI")
+        if ema_status != "PASS":
+            failed.append("EMA")
+        if runway_status != "PASS":
+            failed.append("RUNWAY")
+
+        reason = (
+            f"LOCK | {setup_name} | "
+            f"Failed: {', '.join(failed) if failed else 'SETUP'}"
+        )
+
+    elif not is_candle_size_valid:
+        reason = (
+            f"Size Lock | Candle range "
+            f"{candle_range:.1f} pts "
+            f"(required "
+            f"{float(candle_cfg['min_range']):.0f}-"
+            f"{float(candle_cfg['max_range']):.0f})"
+        )
+
+    elif not candle_confirmed:
+        reason = (
+            "Marubozu Lock | Opposite wick "
+            f"exceeds {float(wick_cfg['max_body_ratio']) * 100:.1f}% of candle body"
+        )
+
+    else:
+        reason = (
+            f"SIGNAL READY | "
+            f"{setup_name} | "
+            f"{trade_type} | "
+            f"Runway {runway_distance:.1f} pts"
+        )
 
     # --------------------------------------------------------
     # Option strike
