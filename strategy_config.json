@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "rsi": {
+    "ce_min": 60.0,
+    "pe_max": 40.0,
+    "pullback_min": 45.0,
+    "pullback_max": 55.0,
+    "mode": "HARD"
+  },
+  "ema": {
+    "pullback_tolerance": 15.0,
+    "mode": "HARD"
+  },
+  "volume": {
+    "min_ratio": 1.2,
+    "mode": "SOFT"
+  },
+  "runway": {
+    "min_points": 15.0,
+    "mode": "HARD"
+  },
+  "candle": {
+    "min_points": 12.0,
+    "max_points": 25.0,
+    "mode": "HARD"
+  },
+  "wick": {
+    "max_body_ratio": 0.05,
+    "mode": "HARD"
+  },
+  "oi": {
+    "min_change_pct": 5.0,
+    "mode": "HARD"
+  },
+  "flow": {
+    "threshold": 0.15,
+    "mode": "HARD"
+  }
+}
