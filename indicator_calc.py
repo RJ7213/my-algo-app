@@ -714,6 +714,16 @@ def calculate_closed_candle_signal(
             "reason": "Waiting for 22 candles",
         }
 
+    # Load strategy configuration for this calculation cycle.
+    # These values are controlled from the Dashboard via strategy_config.json.
+    cfg = strategy_config()
+    rsi_cfg = cfg["rsi"]
+    ema_cfg = cfg["ema"]
+    vol_cfg = cfg["volume"]
+    runway_cfg = cfg["runway"]
+    candle_cfg = cfg["candle"]
+    wick_cfg = cfg["wick"]
+
     closed_idx = -2
 
     row = df.iloc[closed_idx]
