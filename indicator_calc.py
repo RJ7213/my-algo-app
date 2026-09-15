@@ -728,7 +728,7 @@ def calculate_closed_candle_signal(
 
     psy_level = int(
         round(
-            float(spot)
+            c_close
             / PSYCHOLOGICAL_STEP
         )
         * PSYCHOLOGICAL_STEP
@@ -774,7 +774,7 @@ def calculate_closed_candle_signal(
     is_pullback = (
         not is_rejection
         and abs(
-            float(spot) - ema9
+            c_close - ema9
         )
         <= 25.0
     )
@@ -819,7 +819,7 @@ def calculate_closed_candle_signal(
 
         otype = (
             "CE"
-            if float(spot) >= ema9
+            if c_close >= ema9
             else "PE"
         )
 
@@ -832,7 +832,7 @@ def calculate_closed_candle_signal(
         ema_status = (
             "PASS"
             if abs(
-                float(spot) - ema9
+                c_close - ema9
             ) <= 15.0
             else "FAIL"
         )
@@ -857,7 +857,7 @@ def calculate_closed_candle_signal(
 
     else:
 
-        if float(spot) > ema9:
+        if c_close > ema9:
 
             otype = "CE"
 
@@ -971,13 +971,13 @@ def calculate_closed_candle_signal(
 
         runway_distance = (
             float(day_high)
-            - float(spot)
+            - c_close
         )
 
     elif otype == "PE":
 
         runway_distance = (
-            float(spot)
+            c_close
             - float(day_low)
         )
 
@@ -998,35 +998,16 @@ def calculate_closed_candle_signal(
 
     # --------------------------------------------------------
     # FINAL GATE
-    # --------------------------------------------------------
+    # Volume >= 1.20x is a hard strategy gate.
+    # All entry conditions must pass on the completed candle.
 
-    --------------------------------------------------------
-2
-# FINAL GATE
-3
-#
-4
-# Volume is advisory only.
-5
-# Volume is still calculated, displayed and stored
-6
-# in history, but it does not block entries.
-7
-# --------------------------------------------------------
-8
- 
-9
-signal_gate = (
-10
-otype != "NONE"
-11
-and rsi_status == "PASS"
-12
-and ema_status == "PASS"
-13
-and runway_status == "PASS"
-14
-)
+    signal_gate = (
+        otype != "NONE"
+        and rsi_status == "PASS"
+        and ema_status == "PASS"
+        and vol_status == "PASS"
+        and runway_status == "PASS"
+    )
 
     final_trigger = (
         signal_gate
@@ -1092,7 +1073,7 @@ and runway_status == "PASS"
 
     option_strike = int(
         round(
-            float(spot)
+            c_close
             / PSYCHOLOGICAL_STEP
         )
         * PSYCHOLOGICAL_STEP
@@ -1109,7 +1090,7 @@ and runway_status == "PASS"
         next_wall = float(day_low)
 
     else:
-        next_wall = float(spot)
+        next_wall = c_close
 
     return {
         "ready": True,
