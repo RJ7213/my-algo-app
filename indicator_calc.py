@@ -72,6 +72,21 @@ IST = timezone(timedelta(hours=5, minutes=30))
 DATA_RAW_FILE = "data_raw.json"
 SIGNAL_FILE = "processed_indicators.json"
 LEGACY_SIGNAL_FILE = "strategy_signal.json"
+STRATEGY_CONFIG_FILE = "strategy_config.json"
+DEFAULT_STRATEGY_CONFIG = {'version': 1, 'rsi': {'ce_min': 60.0, 'pe_max': 40.0, 'pullback_min': 45.0, 'pullback_max': 55.0, 'mode': 'HARD'}, 'ema': {'pullback_tolerance': 15.0, 'mode': 'HARD'}, 'volume': {'min_ratio': 1.2, 'mode': 'SOFT'}, 'runway': {'min_points': 15.0, 'mode': 'HARD'}, 'candle': {'min_points': 12.0, 'max_points': 25.0, 'mode': 'HARD'}, 'wick': {'max_body_ratio': 0.05, 'mode': 'HARD'}, 'oi': {'min_change_pct': 5.0, 'mode': 'HARD'}, 'flow': {'threshold': 0.15, 'mode': 'HARD'}}
+VALID_MODES = {"HARD", "SOFT", "OFF"}
+
+def strategy_config():
+    cfg = load_json(STRATEGY_CONFIG_FILE, {})
+    if not isinstance(cfg, dict): cfg = {}
+    out = json.loads(json.dumps(DEFAULT_STRATEGY_CONFIG))
+    for section, values in cfg.items():
+        if section in out and isinstance(values, dict): out[section].update(values)
+    for section in ("rsi","ema","volume","runway","candle","wick","oi","flow"):
+        mode = str(out[section].get("mode", "HARD")).upper()
+        out[section]["mode"] = mode if mode in VALID_MODES else DEFAULT_STRATEGY_CONFIG[section]["mode"]
+    return out
+
 
 
 # ============================================================
@@ -379,6 +394,14 @@ def get_candle_status(df):
     The latest row is treated as forming because the worker
     publishes the current 5-minute candle continuously.
     """
+
+    cfg = strategy_config()
+    rsi_cfg = cfg["rsi"]
+    ema_cfg = cfg["ema"]
+    vol_cfg = cfg["volume"]
+    runway_cfg = cfg["runway"]
+    candle_cfg = cfg["candle"]
+    wick_cfg = cfg["wick"]
 
     if len(df) < 22:
         return None, None
@@ -739,9 +762,9 @@ def calculate_closed_candle_signal(
     # --------------------------------------------------------
 
     is_candle_size_valid = (
-        MIN_CANDLE_RANGE
+        float(candle_cfg["min_points"])
         <= candle_range
-        <= MAX_CANDLE_RANGE
+        <= float(candle_cfg["max_points"])
     )
 
     # --------------------------------------------------------
@@ -825,7 +848,7 @@ def calculate_closed_candle_signal(
 
         rsi_status = (
             "PASS"
-            if 45.0 <= rsi_v <= 55.0
+            if float(rsi_cfg["pullback_min"]) <= rsi_v <= float(rsi_cfg["pullback_max"])
             else "FAIL"
         )
 
@@ -833,7 +856,7 @@ def calculate_closed_candle_signal(
             "PASS"
             if abs(
                 c_close - ema9
-            ) <= 15.0
+            ) <= float(ema_cfg["pullback_tolerance"])
             else "FAIL"
         )
 
@@ -848,7 +871,7 @@ def calculate_closed_candle_signal(
         candle_confirmed = (
             opposite_wick
             <= candle_body
-            * MAX_OPPOSITE_WICK_RATIO
+            * float(wick_cfg["max_body_ratio"])
         )
 
     # --------------------------------------------------------
@@ -863,7 +886,7 @@ def calculate_closed_candle_signal(
 
             rsi_status = (
                 "PASS"
-                if rsi_v >= 60.0
+                if rsi_v >= float(rsi_cfg["ce_min"])
                 else "FAIL"
             )
 
@@ -873,7 +896,7 @@ def calculate_closed_candle_signal(
 
             rsi_status = (
                 "PASS"
-                if rsi_v <= 40.0
+                if rsi_v <= float(rsi_cfg["pe_max"])
                 else "FAIL"
             )
 
@@ -890,7 +913,7 @@ def calculate_closed_candle_signal(
         candle_confirmed = (
             opposite_wick
             <= candle_body
-            * MAX_OPPOSITE_WICK_RATIO
+            * float(wick_cfg["max_body_ratio"])
         )
 
     # --------------------------------------------------------
@@ -959,7 +982,7 @@ def calculate_closed_candle_signal(
         "PASS"
         if (
             vol_data_valid
-            and vol_ratio >= MIN_VOLUME_RATIO
+            and vol_ratio >= float(vol_cfg["min_ratio"])
         )
         else "FAIL"
     )
@@ -992,7 +1015,7 @@ def calculate_closed_candle_signal(
 
     runway_status = (
         "PASS"
-        if runway_distance >= MIN_RUNWAY
+        if runway_distance >= float(runway_cfg["min_points"])
         else "FAIL"
     )
 
@@ -1029,7 +1052,7 @@ def calculate_closed_candle_signal(
         if ema_status != "PASS":
             failed.append("EMA")
 
-        if vol_status != "PASS":
+        if vol_status != "PASS" and vol_cfg["mode"] == "HARD":
             failed.append("VOLUME")
 
         if runway_status != "PASS":
@@ -1145,6 +1168,8 @@ def calculate_closed_candle_signal(
 
         "run_df":
             runway_distance,
+
+        "strategy_config": cfg,
 
         "intraday_high":
             float(day_high),
@@ -1262,6 +1287,7 @@ def start_indicator_engine():
                     "signal_volume_ratio": None,
                     "completed_candles": [],
                     "level_engine": {"levels": [], "support": None, "resistance": None},
+                    "strategy_config": strategy_config(),
                     "support": None,
                     "resistance": None,
                     "calculated_at":
