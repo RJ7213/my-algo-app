@@ -806,7 +806,7 @@ def calculate_closed_candle_signal(
         and abs(
             float(spot) - ema9
         )
-        <= 25.0
+        <= float(ema_cfg["pullback_tolerance"])
     )
 
     # --------------------------------------------------------
@@ -1041,6 +1041,11 @@ def calculate_closed_candle_signal(
         and ema_status == "PASS"
         and runway_status == "PASS"
     )
+
+    # Keep the legacy output name used by the engine.
+    # The previous repair removed final_trigger but the return block
+    # still expects it.
+    final_trigger = signal_gate
 
     # --------------------------------------------------------
     # Option strike
