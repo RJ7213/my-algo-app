@@ -1,39 +1,35 @@
 {
-  "version": 1,
-  "rsi": {
-    "ce_min": 60.0,
-    "pe_max": 40.0,
-    "pullback_min": 45.0,
-    "pullback_max": 55.0,
-    "mode": "HARD"
+  "version": 2,
+  "gates": {
+    "rsi": "HARD",
+    "ema": "HARD",
+    "volume": "SOFT",
+    "runway": "HARD",
+    "candle_size": "HARD",
+    "opposite_wick": "HARD",
+    "oi": "HARD",
+    "flow": "HARD"
   },
-  "ema": {
-    "pullback_tolerance": 15.0,
-    "mode": "HARD"
+  "pullback": {
+    "ce_rsi_min": 60.0,
+    "pe_rsi_max": 40.0,
+    "ema_tolerance": 15.0
   },
   "volume": {
-    "min_ratio": 1.2,
-    "mode": "SOFT"
+    "min_ratio": 1.20
   },
   "runway": {
-    "min_points": 15.0,
-    "mode": "HARD"
+    "min_points": 15.0
   },
   "candle": {
-    "min_points": 12.0,
-    "max_points": 25.0,
-    "mode": "HARD"
+    "min_range": 12.0,
+    "max_range": 25.0
   },
   "wick": {
-    "max_body_ratio": 0.05,
-    "mode": "HARD"
+    "max_body_ratio": 0.05
   },
-  "oi": {
-    "min_change_pct": 5.0,
-    "mode": "HARD"
-  },
-  "flow": {
-    "threshold": 0.15,
-    "mode": "HARD"
+  "structure": {
+    "oi_min_change_pct": 5.0,
+    "flow_threshold": 0.15
   }
 }
