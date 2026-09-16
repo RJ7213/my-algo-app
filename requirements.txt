@@ -6,3 +6,5 @@ logzero
 websocket-client
 requests
 smartapi-python
+fastapi
+uvicorn
