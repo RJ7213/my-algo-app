@@ -43,7 +43,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timedelta, timezone, time as dtime
+from datetime import datetime, timedelta, timezone
 
 import pyotp
 
@@ -58,9 +58,6 @@ logging.basicConfig(
 )
 
 IST = timezone(timedelta(hours=5, minutes=30))
-CONTINUOUS_SESSION_START = dtime(9, 15)
-CONTINUOUS_SESSION_END = dtime(15, 15)
-CAS_SESSION_END = dtime(15, 35)
 
 # ============================================================
 # ENVIRONMENT
@@ -76,39 +73,11 @@ NIFTY_SPOT_TOKEN = os.getenv("NIFTY_SPOT_TOKEN", "99926000")
 DATA_RAW_FILE = "data_raw.json"
 CANDLE_CACHE_FILE = "candle_cache.json"
 CONTRACT_CACHE_FILE = "option_contract_cache.json"
-FUTURE_CANDLE_CACHE_FILE = "future_candle_cache.json"
 
 
 # ============================================================
 # TIME / JSON
 # ============================================================
-
-def session_type_now(dt=None):
-    dt = dt or now_ist()
-    if dt.weekday() >= 5:
-        return "CLOSED"
-    if CONTINUOUS_SESSION_START <= dt.time() < CONTINUOUS_SESSION_END:
-        return "CONTINUOUS"
-    if CONTINUOUS_SESSION_END <= dt.time() < CAS_SESSION_END:
-        return "CAS"
-    return "CLOSED"
-
-
-def market_status_now(dt=None):
-    return "OPEN" if session_type_now(dt) == "CONTINUOUS" else "CLOSED"
-
-
-def is_continuous_timestamp(value):
-    try:
-        dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
-        dt = dt.replace(tzinfo=IST) if dt.tzinfo is None else dt.astimezone(IST)
-        return dt.weekday() < 5 and CONTINUOUS_SESSION_START <= dt.time() < CONTINUOUS_SESSION_END
-    except Exception:
-        return False
-
-
-def filter_continuous_candles(candles):
-    return [row for row in (valid_candles(candles) or []) if is_continuous_timestamp(row[0])]
 
 def now_ist():
     return datetime.now(IST)
@@ -160,13 +129,13 @@ def load_persisted_candles():
     if isinstance(cached, dict):
         candles = valid_candles(cached.get("candles"))
         if candles:
-            return filter_continuous_candles(candles), cached.get("saved_at")
+            return candles, cached.get("saved_at")
 
     raw = load_json(DATA_RAW_FILE, None)
     if isinstance(raw, dict):
         candles = valid_candles(raw.get("candles"))
         if candles:
-            return filter_continuous_candles(candles), raw.get("candle_last_success")
+            return candles, raw.get("candle_last_success")
 
     return None, None
 
@@ -182,20 +151,6 @@ def save_persisted_candles(candles, saved_at):
         )
     except Exception as exc:
         logging.debug("Candle cache save error: %s", exc)
-
-
-def load_cached_candles_file(path):
-    cached = load_json(path, None)
-    if isinstance(cached, dict):
-        return filter_continuous_candles(cached.get("candles"))
-    return []
-
-
-def save_cached_candles_file(path, candles, saved_at):
-    try:
-        atomic_write_json(path, {"saved_at": saved_at, "candles": candles[-300:]})
-    except Exception as exc:
-        logging.debug("Candle cache save error (%s): %s", path, exc)
 
 
 # ============================================================
@@ -653,28 +608,11 @@ def parse_tick(message):
             if cumulative_volume is not None:
                 break
 
-    def first_number(*keys):
-        for key in keys:
-            if message.get(key) is not None:
-                value = safe_float(message.get(key))
-                if value is not None:
-                    return value
-        return None
-
     return {
         "token": token,
         "ltp": price,
         "timestamp": ts,
-        "exchange_timestamp": message.get("exchange_timestamp"),
         "cumulative_volume": cumulative_volume,
-        "total_buy_quantity": first_number("total_buy_quantity", "buy_quantity"),
-        "total_sell_quantity": first_number("total_sell_quantity", "sell_quantity"),
-        "open_interest": first_number("open_interest", "oi"),
-        "open_interest_change_percentage": first_number("open_interest_change_percentage", "oi_change_pct"),
-        # SmartAPI's parser exposes the two best-5 arrays with the
-        # historical names reversed; normalize them here.
-        "best_5_buy_data": message.get("best_5_sell_data") or [],
-        "best_5_sell_data": message.get("best_5_buy_data") or [],
     }
 
 
@@ -788,12 +726,6 @@ def start_backend_factory():
 
             option_contract = None
             option_hint_key = None
-            option_chain_live = {}
-            option_token_map = {
-                str(contract["symboltoken"]): contract
-                for contract in option_master.values()
-                if isinstance(contract, dict) and contract.get("symboltoken")
-            }
 
             # Current live 5-min candles.
             spot_live_candle = None
@@ -802,17 +734,11 @@ def start_backend_factory():
             # Last cumulative future volume.
             future_prev_cumulative_volume = None
 
-            # Historical/live NIFTY futures candles for the volume gate.
-            future_candles = load_cached_candles_file(FUTURE_CANDLE_CACHE_FILE)
-
             # Historical spot candles.
             if cached_candles:
                 spot_candles = cached_candles
             else:
                 spot_candles = []
-
-            historical_backfill_needed = not bool(cached_candles)
-            historical_backfill_attempted = False
 
             last_candle_fetch = (
                 datetime.min.replace(tzinfo=IST)
@@ -911,31 +837,26 @@ def start_backend_factory():
                         )
 
                     # --------------------------------------------
-                    # NIFTY OPTION CHAIN - SNAP QUOTE
-                    # 608 current contracts are within Angel One's
-                    # 1000-token/session subscription quota.
+                    # OPTION - FULL MODE
                     # --------------------------------------------
 
-                    option_tokens = [
-                        str(contract["symboltoken"])
-                        for contract in option_master.values()
-                        if isinstance(contract, dict) and contract.get("symboltoken")
-                    ]
+                    if option_contract:
 
-                    if option_tokens:
                         sws.subscribe(
-                            "nifty-options-chain",
+                            "nifty-option",
                             3,
                             [
                                 {
                                     "exchangeType": 2,
-                                    "tokens": option_tokens,
+                                    "tokens": [
+                                        str(
+                                            option_contract[
+                                                "symboltoken"
+                                            ]
+                                        )
+                                    ],
                                 }
                             ],
-                        )
-                        logging.info(
-                            "NIFTY option-chain subscription active: %d tokens",
-                            len(option_tokens),
                         )
 
                 except Exception as exc:
@@ -1006,31 +927,17 @@ def start_backend_factory():
                                     increment,
                                 )
 
-                        elif token in option_token_map:
-                            contract = option_token_map[token]
-                            row = {
-                                **contract,
-                                "symbol": contract.get("tradingsymbol"),
-                                "trading_symbol": contract.get("tradingsymbol"),
-                                "token": token,
-                                "ltp": tick.get("ltp"),
-                                "timestamp": tick.get("timestamp").isoformat() if tick.get("timestamp") else None,
-                                "exchange_timestamp": tick.get("exchange_timestamp"),
-                                "open_interest": tick.get("open_interest"),
-                                "oi": tick.get("open_interest"),
-                                "open_interest_change_percentage": tick.get("open_interest_change_percentage"),
-                                "oi_change_pct": tick.get("open_interest_change_percentage"),
-                                "volume_day": tick.get("cumulative_volume"),
-                                "volume": tick.get("cumulative_volume"),
-                                "total_buy_quantity": tick.get("total_buy_quantity") or 0.0,
-                                "total_sell_quantity": tick.get("total_sell_quantity") or 0.0,
-                                "best_5_buy_data": tick.get("best_5_buy_data") or [],
-                                "best_5_sell_data": tick.get("best_5_sell_data") or [],
-                            }
-                            option_chain_live[f"{int(float(contract['strike']))}:{contract['option_type']}"] = row
+                        elif (
+                            option_contract
+                            and token
+                            == str(
+                                option_contract[
+                                    "symboltoken"
+                                ]
+                            )
+                        ):
 
-                            if option_contract and token == str(option_contract["symboltoken"]):
-                                ticks["option"] = tick
+                            ticks["option"] = tick
 
                 except Exception as exc:
                     logging.debug(
@@ -1114,40 +1021,73 @@ def start_backend_factory():
                     # LIVE SPOT 5-MIN CANDLE
                     # ------------------------------------------------
 
-                    if is_continuous_timestamp(nifty_tick["timestamp"]):
-                        spot_candles = update_live_candle(
-                            spot_candles, nifty_tick["timestamp"], spot, 0.0,
-                        )[-300:]
-                        spot_live_candle = spot_candles[-1] if spot_candles else None
-                    else:
-                        spot_live_candle = None
+                    spot_live_candle = [
+                        candle_bucket(
+                            nifty_tick["timestamp"]
+                        ).isoformat(),
+                        spot,
+                        spot,
+                        spot,
+                        spot,
+                        0.0,
+                    ]
+
+                    if spot_candles:
+
+                        try:
+                            last_dt = datetime.fromisoformat(
+                                str(spot_candles[-1][0])
+                            )
+
+                            live_dt = datetime.fromisoformat(
+                                spot_live_candle[0]
+                            )
+
+                            if last_dt == live_dt:
+                                # Start from historical OHLC and update.
+                                base = list(spot_candles[-1])
+
+                                base[2] = max(
+                                    float(base[2]),
+                                    spot,
+                                )
+
+                                base[3] = min(
+                                    float(base[3]),
+                                    spot,
+                                )
+
+                                base[4] = spot
+
+                                spot_live_candle = base
+
+                        except Exception:
+                            pass
 
                     # ------------------------------------------------
-                    # LIVE FUTURES 5-MIN CANDLE
+                    # LIVE FUTURE 5-MIN CANDLE
                     # ------------------------------------------------
-                    # Futures volume is available as a cumulative exchange
-                    # value. on_data converts it to a non-negative increment.
-                    # Maintain the live futures candle here so downstream
-                    # engines can use completed futures volume consistently.
-                    if future_tick is not None and is_continuous_timestamp(future_tick.get("timestamp")):
-                        future_price = safe_float(future_tick.get("ltp"))
-                        if future_price is not None:
-                            future_candles = update_live_candle(
-                                future_candles,
-                                future_tick["timestamp"],
-                                future_price,
-                                future_tick.get("volume_increment", 0.0),
-                            )[-300:]
-                            future_live_candle = (
-                                future_candles[-1]
-                                if future_candles
-                                else None
+
+                    if future_tick:
+
+                        future_price = float(
+                            future_tick["ltp"]
+                        )
+
+                        volume_increment = float(
+                            future_tick.get(
+                                "volume_increment",
+                                0.0,
                             )
-                            save_cached_candles_file(
-                                FUTURE_CANDLE_CACHE_FILE,
-                                future_candles,
-                                now_dt.isoformat(),
-                            )
+                            or 0.0
+                        )
+
+                        future_live_candle = update_live_candle(
+                            [],
+                            future_tick["timestamp"],
+                            future_price,
+                            volume_increment,
+                        )[-1]
 
                     # ------------------------------------------------
                     # HISTORICAL SPOT CANDLE BACKFILL
@@ -1161,13 +1101,9 @@ def start_backend_factory():
                         now_dt - last_candle_attempt
                     ).total_seconds()
 
-                    # REST candle backfill is attempted once when the process
-                    # starts without a usable cache. A seven-day window covers
-                    # weekends and most exchange holidays. CAS candles are
-                    # removed by filter_continuous_candles().
                     candle_due = (
-                        historical_backfill_needed
-                        and not historical_backfill_attempted
+                        not spot_candles
+                        or seconds_since_success >= 60
                     )
 
                     retry_allowed = (
@@ -1177,25 +1113,16 @@ def start_backend_factory():
 
                     if candle_due and retry_allowed:
 
-                        historical_backfill_attempted = True
                         last_candle_attempt = now_dt
 
-                        history_start = (
-                            now_dt - timedelta(days=7)
-                        )
-
-                        from_d = history_start.strftime(
+                        from_d = (
+                            now_dt - timedelta(days=2)
+                        ).strftime(
                             "%Y-%m-%d %H:%M"
                         )
 
                         to_d = now_dt.strftime(
                             "%Y-%m-%d %H:%M"
-                        )
-
-                        logging.info(
-                            "Historical candle window: %s to %s",
-                            from_d,
-                            to_d,
                         )
 
                         try:
@@ -1207,8 +1134,10 @@ def start_backend_factory():
                             res = api.getCandleData(
                                 {
                                     "exchange": "NSE",
-                                    "symboltoken": NIFTY_SPOT_TOKEN,
-                                    "interval": "FIVE_MINUTE",
+                                    "symboltoken":
+                                        NIFTY_SPOT_TOKEN,
+                                    "interval":
+                                        "FIVE_MINUTE",
                                     "fromdate": from_d,
                                     "todate": to_d,
                                 }
@@ -1220,27 +1149,13 @@ def start_backend_factory():
                                 and res.get("data")
                             ):
 
-                                fresh = filter_continuous_candles(
+                                fresh = valid_candles(
                                     res.get("data")
                                 )
 
                                 if fresh:
 
-                                    spot_candles = fresh[-300:]
-                                    historical_backfill_needed = False
-
-                                    if (
-                                        spot_live_candle
-                                        and is_continuous_timestamp(
-                                            nifty_tick["timestamp"]
-                                        )
-                                    ):
-                                        spot_candles = update_live_candle(
-                                            spot_candles,
-                                            nifty_tick["timestamp"],
-                                            spot,
-                                            0.0,
-                                        )[-300:]
+                                    spot_candles = fresh
 
                                     last_candle_fetch = now_dt
 
@@ -1256,77 +1171,27 @@ def start_backend_factory():
                                         len(spot_candles),
                                     )
 
-                                    if (
-                                        future_contract
-                                        and len(future_candles) < 22
-                                    ):
-                                        time.sleep(1.0)
-                                        try:
-                                            fres = api.getCandleData(
-                                                {
-                                                    "exchange": "NFO",
-                                                    "symboltoken": str(
-                                                        future_contract[
-                                                            "symboltoken"
-                                                        ]
-                                                    ),
-                                                    "interval": "FIVE_MINUTE",
-                                                    "fromdate": from_d,
-                                                    "todate": to_d,
-                                                }
-                                            )
-
-                                            if (
-                                                fres
-                                                and fres.get("status")
-                                                and fres.get("data")
-                                            ):
-                                                fh = filter_continuous_candles(
-                                                    fres.get("data")
-                                                )
-
-                                                if fh:
-                                                    future_candles = fh[-300:]
-
-                                                    save_cached_candles_file(
-                                                        FUTURE_CANDLE_CACHE_FILE,
-                                                        future_candles,
-                                                        now_dt.isoformat(),
-                                                    )
-
-                                                    logging.info(
-                                                        "NIFTY futures candles "
-                                                        "updated: %d",
-                                                        len(future_candles),
-                                                    )
-
-                                        except Exception as exc:
-                                            logging.warning(
-                                                "Historical NIFTY futures "
-                                                "candle API error: %s",
-                                                exc,
-                                            )
-
                                 else:
-                                    historical_backfill_attempted = False
+
                                     candle_retry_delay = min(
                                         candle_retry_delay * 2,
                                         MAX_CANDLE_RETRY,
                                     )
 
                             else:
-                                historical_backfill_attempted = False
+
                                 candle_retry_delay = min(
                                     candle_retry_delay * 2,
                                     MAX_CANDLE_RETRY,
                                 )
 
                         except Exception as exc:
+
                             logging.warning(
                                 "Historical candle API error: %s",
                                 exc,
                             )
-                            historical_backfill_attempted = False
+
                             candle_retry_delay = min(
                                 candle_retry_delay * 2,
                                 MAX_CANDLE_RETRY,
@@ -1336,11 +1201,13 @@ def start_backend_factory():
                     # MERGED CANDLES
                     # ------------------------------------------------
 
-                    merged_spot_candles = filter_continuous_candles(
+                    merged_spot_candles = (
                         merge_historical_with_live(
-                            spot_candles, spot_live_candle, max_candles=300,
+                            spot_candles,
+                            spot_live_candle,
+                            max_candles=300,
                         )
-                    )[-300:]
+                    )
 
                     # ------------------------------------------------
                     # READ DESIRED OPTION FROM INDICATOR OUTPUT
@@ -1474,16 +1341,20 @@ def start_backend_factory():
 
                     option_quote = None
 
-                    desired_row = option_chain_live.get(option_hint_key) if option_hint_key else None
-                    if isinstance(desired_row, dict) and desired_row.get("ltp") is not None:
-                        option_quote = dict(desired_row)
-                    elif option_contract and option_tick:
+                    if (
+                        option_contract
+                        and option_tick
+                    ):
+
                         option_quote = {
                             **option_contract,
-                            "symbol": option_contract.get("tradingsymbol"),
-                            "ltp": float(option_tick["ltp"]),
-                            "timestamp": option_tick["timestamp"].isoformat(),
-                            "token": option_contract.get("symboltoken"),
+                            "ltp": float(
+                                option_tick["ltp"]
+                            ),
+                            "timestamp":
+                                option_tick[
+                                    "timestamp"
+                                ].isoformat(),
                         }
 
                     # ------------------------------------------------
@@ -1515,46 +1386,6 @@ def start_backend_factory():
                                     "volume_increment",
                                     0.0,
                                 ),
-                            "volume_day":
-                                future_tick.get(
-                                    "cumulative_volume"
-                                ),
-                            "total_buy_quantity":
-                                future_tick.get(
-                                    "total_buy_quantity"
-                                ),
-                            "total_sell_quantity":
-                                future_tick.get(
-                                    "total_sell_quantity"
-                                ),
-                            "open_interest":
-                                future_tick.get(
-                                    "open_interest"
-                                ),
-                            "oi":
-                                future_tick.get(
-                                    "open_interest"
-                                ),
-                            "open_interest_change_percentage":
-                                future_tick.get(
-                                    "open_interest_change_percentage"
-                                ),
-                            "oi_change_pct":
-                                future_tick.get(
-                                    "open_interest_change_percentage"
-                                ),
-                            "exchange_timestamp":
-                                future_tick.get(
-                                    "exchange_timestamp"
-                                ),
-                            "best_5_buy_data":
-                                future_tick.get(
-                                    "best_5_buy_data"
-                                ) or [],
-                            "best_5_sell_data":
-                                future_tick.get(
-                                    "best_5_sell_data"
-                                ) or [],
                         }
 
                     # ------------------------------------------------
@@ -1652,8 +1483,6 @@ def start_backend_factory():
 
                         "future_live_candle":
                             future_live_candle,
-                        "future_candles":
-                            future_candles[-300:],
 
                         # ------------------------------
                         # RAW OPTION
@@ -1667,10 +1496,6 @@ def start_backend_factory():
 
                         "option_hint":
                             option_hint_key,
-                        "option_chain":
-                            dict(option_chain_live),
-                        "option_chain_latest_tick":
-                            now_dt.isoformat() if option_chain_live else None,
 
                         # ------------------------------
                         # RAW DAY RANGE
@@ -1688,15 +1513,6 @@ def start_backend_factory():
 
                         "websocket_connected":
                             websocket_connected,
-
-                        # Market status is clock-based, not WebSocket-based.
-                        # A connected socket after 15:30 must still show CLOSED.
-                        "market_status": market_status_now(now_dt),
-                        "session_type": session_type_now(now_dt),
-                        "new_entries_allowed": session_type_now(now_dt) == "CONTINUOUS",
-                        "is_cas_session": session_type_now(now_dt) == "CAS",
-                        "worker_status":
-                            "RUNNING" if websocket_connected else "DISCONNECTED",
 
                         "last_update":
                             now_dt.strftime(
