@@ -73,28 +73,6 @@ DATA_RAW_FILE = "data_raw.json"
 SIGNAL_FILE = "processed_indicators.json"
 LEGACY_SIGNAL_FILE = "strategy_signal.json"
 
-STRATEGY_CONFIG_FILE = "strategy_config.json"
-DEFAULT_STRATEGY_CONFIG = {
-    "rsi": {"ce_min": 60.0, "pe_max": 40.0, "pullback_min": 45.0, "pullback_max": 55.0},
-    "ema": {"pullback_tolerance": 15.0},
-    "volume": {"min_ratio": 1.20},
-    "runway": {"min_points": 15.0},
-    "candle": {"min_range": 12.0, "max_range": 25.0},
-    "wick": {"max_body_ratio": 0.05},
-}
-
-def load_strategy_config():
-    cfg = json.loads(json.dumps(DEFAULT_STRATEGY_CONFIG))
-    try:
-        with open(STRATEGY_CONFIG_FILE, "r") as f:
-            loaded = json.load(f)
-        for section, values in loaded.items():
-            if isinstance(values, dict) and section in cfg:
-                cfg[section].update(values)
-    except Exception:
-        pass
-    return cfg
-
 
 # ============================================================
 # STRATEGY CONSTANTS
@@ -156,6 +134,24 @@ def load_json(path, default=None):
             return json.load(f)
     except Exception:
         return default
+
+
+CONFIG_FILE = "strategy_config.json"
+
+
+def load_strategy_config():
+    cfg = load_json(CONFIG_FILE, {})
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def cfg_float(cfg, *keys, default):
+    cur = cfg
+    try:
+        for key in keys:
+            cur = cur[key]
+        return float(cur)
+    except (KeyError, TypeError, ValueError):
+        return float(default)
 
 
 # ============================================================
@@ -699,12 +695,20 @@ def calculate_closed_candle_signal(
     day_high,
     day_low,
     volume_df=None,
+    option_volume_snapshot=None,
 ):
     """
     ALL entry logic is based on the completed candle (-2).
 
     This prevents intrabar signal repainting.
     """
+
+    cfg = load_strategy_config()
+    min_candle_range = cfg_float(cfg, "candle", "min_range", default=MIN_CANDLE_RANGE)
+    max_candle_range = cfg_float(cfg, "candle", "max_range", default=MAX_CANDLE_RANGE)
+    min_runway = cfg_float(cfg, "runway", "min_points", default=MIN_RUNWAY)
+    wick_ratio = cfg_float(cfg, "wick", "max_body_ratio", default=MAX_OPPOSITE_WICK_RATIO)
+    volume_min_ratio = cfg_float(cfg, "volume", "min_ratio", default=MIN_VOLUME_RATIO)
 
     if len(df) < 22:
 
@@ -714,14 +718,6 @@ def calculate_closed_candle_signal(
         }
 
     closed_idx = -2
-
-    cfg = load_strategy_config()
-    rsi_cfg = cfg["rsi"]
-    ema_cfg = cfg["ema"]
-    volume_cfg = cfg["volume"]
-    runway_cfg = cfg["runway"]
-    candle_cfg = cfg["candle"]
-    wick_cfg = cfg["wick"]
 
     row = df.iloc[closed_idx]
 
@@ -769,9 +765,9 @@ def calculate_closed_candle_signal(
     # --------------------------------------------------------
 
     is_candle_size_valid = (
-        float(candle_cfg["min_range"])
+        min_candle_range
         <= candle_range
-        <= float(candle_cfg["max_range"])
+        <= max_candle_range
     )
 
     # --------------------------------------------------------
@@ -801,12 +797,23 @@ def calculate_closed_candle_signal(
     # Pullback
     # --------------------------------------------------------
 
+    cfg = load_strategy_config()
+    pullback_tolerance = cfg_float(
+        cfg, "pullback", "ema_tolerance",
+        default=cfg_float(cfg, "ema", "pullback_tolerance", default=15.0),
+    )
+    pullback_ce_rsi_min = cfg_float(
+        cfg, "pullback", "ce_rsi_min",
+        default=cfg_float(cfg, "rsi", "ce_min", default=60.0),
+    )
+    pullback_pe_rsi_max = cfg_float(
+        cfg, "pullback", "pe_rsi_max",
+        default=cfg_float(cfg, "rsi", "pe_max", default=40.0),
+    )
+
     is_pullback = (
         not is_rejection
-        and abs(
-            float(spot) - ema9
-        )
-        <= float(ema_cfg["pullback_tolerance"])
+        and abs(float(spot) - ema9) <= pullback_tolerance
     )
 
     # --------------------------------------------------------
@@ -855,7 +862,10 @@ def calculate_closed_candle_signal(
 
         rsi_status = (
             "PASS"
-            if float(rsi_cfg["pullback_min"]) <= rsi_v <= float(rsi_cfg["pullback_max"])
+            if (
+                (otype == "CE" and rsi_v >= pullback_ce_rsi_min)
+                or (otype == "PE" and rsi_v <= pullback_pe_rsi_max)
+            )
             else "FAIL"
         )
 
@@ -863,7 +873,7 @@ def calculate_closed_candle_signal(
             "PASS"
             if abs(
                 float(spot) - ema9
-            ) <= float(ema_cfg["pullback_tolerance"])
+            ) <= 15.0
             else "FAIL"
         )
 
@@ -878,7 +888,7 @@ def calculate_closed_candle_signal(
         candle_confirmed = (
             opposite_wick
             <= candle_body
-            * float(wick_cfg["max_body_ratio"])
+            * wick_ratio
         )
 
     # --------------------------------------------------------
@@ -893,7 +903,7 @@ def calculate_closed_candle_signal(
 
             rsi_status = (
                 "PASS"
-                if rsi_v >= float(rsi_cfg["ce_min"])
+                if rsi_v >= 60.0
                 else "FAIL"
             )
 
@@ -903,7 +913,7 @@ def calculate_closed_candle_signal(
 
             rsi_status = (
                 "PASS"
-                if rsi_v <= float(rsi_cfg["pe_max"])
+                if rsi_v <= 40.0
                 else "FAIL"
             )
 
@@ -920,7 +930,7 @@ def calculate_closed_candle_signal(
         candle_confirmed = (
             opposite_wick
             <= candle_body
-            * float(wick_cfg["max_body_ratio"])
+            * wick_ratio
         )
 
     # --------------------------------------------------------
@@ -934,63 +944,26 @@ def calculate_closed_candle_signal(
     )
 
     # --------------------------------------------------------
-    # Volume
-    #
-    # NIFTY Spot is an index and its candle volume is zero.
-    # Use completed NIFTY Futures candles for the volume gate.
+    # OPTION VOLUME
+    # Exact selected option contract only.
+    # volume_day is cumulative broker volume; the indicator engine
+    # converts tracked cumulative snapshots into completed 5-minute
+    # bucket volume and compares the latest completed bucket with
+    # prior completed buckets.
     # --------------------------------------------------------
-    volume_source = (
-        volume_df
-        if (
-            volume_df is not None
-            and not volume_df.empty
-            and len(volume_df) >= 22
-        )
-        else None
-    )
+    selected_volume = option_volume_snapshot or {}
+    current_volume = selected_volume.get("current_bucket_volume")
+    vol_avg = selected_volume.get("average_previous_bucket_volume")
+    vol_ratio = selected_volume.get("volume_ratio")
+    vol_data_valid = bool(selected_volume.get("data_valid", False))
 
-    if volume_source is not None:
-        volume_window = pd.to_numeric(
-            volume_source["volume"].iloc[-22:-2],
-            errors="coerce",
-        )
-        current_volume_raw = pd.to_numeric(
-            pd.Series([volume_source["volume"].iloc[-2]]),
-            errors="coerce",
-        ).iloc[0]
-        current_volume = (
-            float(current_volume_raw)
-            if not pd.isna(current_volume_raw)
-            else 0.0
-        )
-        positive_window = volume_window[
-            volume_window > 0
-        ]
-        vol_avg = (
-            float(positive_window.mean())
-            if not positive_window.empty
-            else 0.0
-        )
-    else:
-        current_volume = 0.0
-        vol_avg = 0.0
-
-    if current_volume > 0 and vol_avg > 0:
-        vol_ratio = round(
-            current_volume / vol_avg,
-            2,
-        )
+    if vol_ratio is None and current_volume is not None and vol_avg not in (None, 0):
+        vol_ratio = round(float(current_volume) / float(vol_avg), 2)
         vol_data_valid = True
-    else:
-        vol_ratio = None
-        vol_data_valid = False
 
     vol_status = (
         "PASS"
-        if (
-            vol_data_valid
-            and vol_ratio >= float(volume_cfg["min_ratio"])
-        )
+        if vol_data_valid and vol_ratio is not None and vol_ratio >= volume_min_ratio
         else "FAIL"
     )
     # --------------------------------------------------------
@@ -1022,7 +995,7 @@ def calculate_closed_candle_signal(
 
     runway_status = (
         "PASS"
-        if runway_distance >= float(runway_cfg["min_points"])
+        if runway_distance >= min_runway
         else "FAIL"
     )
 
@@ -1030,499 +1003,4 @@ def calculate_closed_candle_signal(
     # FINAL GATE
     # --------------------------------------------------------
 
-    # --------------------------------------------------------
-    # FINAL GATE
-    # Volume is advisory only; it is calculated/displayed/stored but
-    # never included in the technical signal gate.
-    # --------------------------------------------------------
-    signal_gate = (
-        otype != "NONE"
-        and rsi_status == "PASS"
-        and ema_status == "PASS"
-        and runway_status == "PASS"
-    )
 
-    # Candle size and opposite-wick are part of the legacy indicator
-    # trigger. Their HARD/SOFT/OFF enforcement is handled by paper_engine.
-    final_trigger = (
-        signal_gate
-        and is_candle_size_valid
-        and candle_confirmed
-    )
-
-    # --------------------------------------------------------
-    # Reason
-    # --------------------------------------------------------
-
-    if not signal_gate:
-        failed = []
-
-        if otype == "NONE":
-            failed.append("SETUP")
-        if rsi_status != "PASS":
-            failed.append("RSI")
-        if ema_status != "PASS":
-            failed.append("EMA")
-        if runway_status != "PASS":
-            failed.append("RUNWAY")
-
-        reason = (
-            f"LOCK | {setup_name} | "
-            f"Failed: {', '.join(failed) if failed else 'SETUP'}"
-        )
-
-    elif not is_candle_size_valid:
-        reason = (
-            f"Size Lock | Candle range "
-            f"{candle_range:.1f} pts "
-            f"(required "
-            f"{float(candle_cfg['min_range']):.0f}-"
-            f"{float(candle_cfg['max_range']):.0f})"
-        )
-
-    elif not candle_confirmed:
-        reason = (
-            "Marubozu Lock | Opposite wick "
-            f"exceeds {float(wick_cfg['max_body_ratio']) * 100:.1f}% of candle body"
-        )
-
-    else:
-        reason = (
-            f"SIGNAL READY | "
-            f"{setup_name} | "
-            f"{trade_type} | "
-            f"Runway {runway_distance:.1f} pts"
-        )
-
-    # --------------------------------------------------------
-    # Option strike
-    # --------------------------------------------------------
-
-    option_strike = int(
-        round(
-            float(spot)
-            / PSYCHOLOGICAL_STEP
-        )
-        * PSYCHOLOGICAL_STEP
-    )
-
-    # --------------------------------------------------------
-    # Next wall
-    # --------------------------------------------------------
-
-    if otype == "CE":
-        next_wall = float(day_high)
-
-    elif otype == "PE":
-        next_wall = float(day_low)
-
-    else:
-        next_wall = float(spot)
-
-    return {
-        "ready": True,
-
-        "signal_triggered":
-            bool(final_trigger),
-
-        "trade_type":
-            trade_type,
-
-        "otype":
-            otype,
-
-        "option_strike":
-            option_strike,
-
-        "strategy_used":
-            setup_name,
-
-        "algo_reason":
-            reason,
-
-        "rsi_v":
-            round(rsi_v, 2),
-
-        "ema9":
-            round(ema9, 2),
-
-        "ema20":
-            round(ema20, 2),
-
-        "rsi_status":
-            rsi_status,
-
-        "ema_status":
-            ema_status,
-
-        "vol_status":
-            vol_status,
-
-        "vol_val":
-    f"{vol_ratio}x" if vol_ratio is not None else "DATA WAIT",
-
-        "volume_ratio":
-            vol_ratio,
-
-        "runway_status":
-            runway_status,
-
-        "runway_val":
-            f"{runway_distance:.1f} pts",
-
-        "run_df":
-            runway_distance,
-
-        "intraday_high":
-            float(day_high),
-
-        "intraday_low":
-            float(day_low),
-
-        "psy_level":
-            psy_level,
-
-        "next_w":
-            next_wall,
-
-        "c_open":
-            c_open,
-
-        "c_close":
-            c_close,
-
-        "c_low":
-            c_low,
-
-        "c_high":
-            c_high,
-
-        "candle_range":
-            candle_range,
-
-        "candle_body":
-            candle_body,
-
-        "top_wick":
-            top_wick,
-
-        "bottom_wick":
-            bottom_wick,
-
-        "candle_size_valid":
-            bool(is_candle_size_valid),
-
-        "candle_confirmed":
-            bool(candle_confirmed),
-
-        "candle_time":
-            str(row["datetime"]),
-
-    }
-
-
-# ============================================================
-# ENGINE
-# ============================================================
-
-def start_indicator_engine():
-
-    logging.info(
-        "Indicator / strategy backend started"
-    )
-
-    last_published_closed_candle = None
-
-    while True:
-
-        try:
-
-            raw = load_json(
-                DATA_RAW_FILE,
-                None,
-            )
-
-            if not isinstance(raw, dict):
-
-                time.sleep(0.5)
-                continue
-
-            spot = raw.get(
-                "live_spot"
-            )
-
-            if spot is None:
-
-                time.sleep(0.5)
-                continue
-
-            spot = float(spot)
-
-            candles = raw.get(
-                "candles",
-                [],
-            )
-
-            df = build_dataframe(
-                candles
-            )
-
-            if len(df) < 22:
-
-                payload = {
-                    "live_spot": spot,
-                    "signal_triggered": False,
-                    "trade_type": "NONE",
-                    "otype": "NONE",
-                    "strategy_used": "NONE",
-                    "algo_reason":
-                        f"Waiting for sufficient candles: "
-                        f"{len(df)}/22",
-                    "engine_status": "WAITING",
-                    "candle_count": len(df),
-                    "rsi": None,
-                    "ema9": None,
-                    "ema20": None,
-                    "signal_rsi": None,
-                    "signal_ema9": None,
-                    "signal_ema20": None,
-                    "signal_volume_ratio": None,
-                    "completed_candles": [],
-                    "level_engine": {"levels": [], "support": None, "resistance": None},
-                    "support": None,
-                    "resistance": None,
-                    "calculated_at":
-                        now_ist().isoformat(),
-                }
-
-                atomic_write_json(SIGNAL_FILE, payload)
-                atomic_write_json(LEGACY_SIGNAL_FILE, payload)
-
-                time.sleep(1)
-                continue
-
-            # ----------------------------------------------------
-            # INDICATORS
-            # ----------------------------------------------------
-
-            df = calculate_indicators(
-                df
-            )
-
-            # ----------------------------------------------------
-            # LIVE DAY RANGE
-            # ----------------------------------------------------
-
-            day_high = float(
-                raw.get(
-                    "intraday_high",
-                    spot,
-                )
-            )
-
-            day_low = float(
-                raw.get(
-                    "intraday_low",
-                    spot,
-                )
-            )
-
-            future_df = build_dataframe(raw.get("future_candles", []))
-            level_engine = build_level_engine(df, spot, day_high, day_low)
-
-            # ----------------------------------------------------
-            # LIVE INDICATOR SNAPSHOT
-            # ----------------------------------------------------
-
-            live_snapshot = (
-                calculate_live_snapshot(
-                    df,
-                    spot,
-                    day_high,
-                    day_low,
-                )
-            )
-
-            # ----------------------------------------------------
-            # CLOSED CANDLE
-            # ----------------------------------------------------
-
-            live_idx, closed_idx = (
-                get_candle_status(df)
-            )
-
-            closed_candle_time = str(
-                df["datetime"].iloc[
-                    closed_idx
-                ]
-            )
-
-            signal = (
-                calculate_closed_candle_signal(
-                    df,
-                    spot,
-                    day_high,
-                    day_low,
-                    future_df,
-                )
-            )
-
-            # ----------------------------------------------------
-            # IMPORTANT:
-            #
-            # Only the newest completed candle can create a new
-            # trigger.
-            #
-            # Once that candle has already been evaluated,
-            # signal_triggered is forced FALSE until a new
-            # completed candle arrives.
-            # ----------------------------------------------------
-
-            is_new_closed_candle = (
-                closed_candle_time
-                != last_published_closed_candle
-            )
-
-            if is_new_closed_candle:
-
-                last_published_closed_candle = (
-                    closed_candle_time
-                )
-
-            else:
-
-                # Same closed candle:
-                # Do not repeatedly trigger paper entries.
-                signal["signal_triggered"] = False
-
-                if signal.get("ready"):
-
-                    if "SIGNAL READY" in str(
-                        signal.get(
-                            "algo_reason",
-                            "",
-                        )
-                    ):
-
-                        signal["algo_reason"] = (
-                            "WAIT | Same completed candle "
-                            "already evaluated"
-                        )
-
-            # ----------------------------------------------------
-            # FINAL PAYLOAD
-            # ----------------------------------------------------
-
-            payload = {
-
-                # ------------------------------
-                # LIVE DATA
-                # ------------------------------
-
-                "live_spot":
-                    spot,
-
-                "spot_timestamp":
-                    raw.get(
-                        "spot_timestamp"
-                    ),
-
-                # ------------------------------
-                # LIVE INDICATORS
-                # ------------------------------
-
-                **live_snapshot,
-
-                # ------------------------------
-                # COMPLETED-CANDLE STRATEGY
-                # ------------------------------
-
-                **signal,
-
-                # Compatibility fields consumed by paper_engine.
-                "rsi": signal.get("rsi_v"),
-                "ema9": signal.get("ema9"),
-                "ema20": signal.get("ema20"),
-                "signal_rsi": signal.get("rsi_v"),
-                "signal_ema9": signal.get("ema9"),
-                "signal_ema20": signal.get("ema20"),
-                "signal_volume_ratio": signal.get("volume_ratio"),
-                "completed_candles": build_completed_candles(df),
-                "level_engine": level_engine,
-                "support": level_engine.get("support"),
-                "resistance": level_engine.get("resistance"),
-
-                # ------------------------------
-                # Explicit candle status
-                # ------------------------------
-
-                "signal_candle_type":
-                    "COMPLETED",
-
-                "signal_candle_time":
-                    closed_candle_time,
-
-                "live_candle_time":
-                    live_snapshot.get(
-                        "live_candle_time"
-                    ),
-
-                # ------------------------------
-                # Backend status
-                # ------------------------------
-
-                "engine_status":
-                    "RUNNING",
-
-                "calculated_at":
-                    now_ist().isoformat(),
-
-                "data_timestamp":
-                    raw.get(
-                        "worker_timestamp"
-                    ),
-
-                # ------------------------------
-                # Raw source status
-                # ------------------------------
-
-                "websocket_connected":
-                    raw.get(
-                        "websocket_connected",
-                        False,
-                    ),
-
-                "future_quote":
-                    raw.get(
-                        "future_quote"
-                    ),
-
-                "future_live_candle":
-                    raw.get(
-                        "future_live_candle"
-                    ),
-                "session_type": raw.get("session_type"),
-                "new_entries_allowed": bool(raw.get("new_entries_allowed", False)),
-                "is_cas_session": bool(raw.get("is_cas_session", False)),
-
-            }
-
-            atomic_write_json(SIGNAL_FILE, payload)
-            atomic_write_json(LEGACY_SIGNAL_FILE, payload)
-
-        except Exception as exc:
-
-            logging.exception(
-                "Indicator engine error: %s",
-                exc,
-            )
-
-        time.sleep(0.5)
-
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
-
-if __name__ == "__main__":
-    start_indicator_engine()
