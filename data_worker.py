@@ -21,7 +21,7 @@
 #   - WebSocket is the live price source.
 #   - Historical REST is used only for candle backfill.
 #   - Option master is loaded once after login and cached.
-#   - NIFTY futures are also resolved once and used for live volume.
+#   - NIFTY futures are resolved once for live price/structure only.
 #
 # Environment:
 #   ANGEL_CLIENT_CODE
@@ -81,6 +81,16 @@ CONTRACT_CACHE_FILE = "option_contract_cache.json"
 
 def now_ist():
     return datetime.now(IST)
+
+
+def market_status_ist(dt):
+    """Return trading-session status using IST clock."""
+    current = dt.astimezone(IST).time()
+    if current >= datetime.strptime("09:15", "%H:%M").time() and current < datetime.strptime("15:15", "%H:%M").time():
+        return "OPEN"
+    if current >= datetime.strptime("15:15", "%H:%M").time() and current < datetime.strptime("15:35", "%H:%M").time():
+        return "CAS"
+    return "CLOSED"
 
 
 def atomic_write_json(path, payload):
@@ -727,12 +737,8 @@ def start_backend_factory():
             option_contract = None
             option_hint_key = None
 
-            # Current live 5-min candles.
+            # Current live 5-min spot candle.
             spot_live_candle = None
-            future_live_candle = None
-
-            # Last cumulative future volume.
-            future_prev_cumulative_volume = None
 
             # Historical spot candles.
             if cached_candles:
@@ -866,8 +872,6 @@ def start_backend_factory():
                     )
 
             def on_data(wsapp, message):
-                nonlocal future_prev_cumulative_volume
-
                 try:
                     tick = parse_tick(message)
 
@@ -893,39 +897,6 @@ def start_backend_factory():
                         ):
 
                             ticks["future"] = tick
-
-                            cumulative = (
-                                tick.get(
-                                    "cumulative_volume"
-                                )
-                            )
-
-                            if cumulative is not None:
-
-                                if (
-                                    future_prev_cumulative_volume
-                                    is None
-                                    or cumulative
-                                    < future_prev_cumulative_volume
-                                ):
-                                    # First tick / day reset.
-                                    increment = 0.0
-                                else:
-                                    increment = (
-                                        cumulative
-                                        - future_prev_cumulative_volume
-                                    )
-
-                                future_prev_cumulative_volume = (
-                                    cumulative
-                                )
-
-                                tick[
-                                    "volume_increment"
-                                ] = max(
-                                    0.0,
-                                    increment,
-                                )
 
                         elif (
                             option_contract
@@ -1063,31 +1034,6 @@ def start_backend_factory():
 
                         except Exception:
                             pass
-
-                    # ------------------------------------------------
-                    # LIVE FUTURE 5-MIN CANDLE
-                    # ------------------------------------------------
-
-                    if future_tick:
-
-                        future_price = float(
-                            future_tick["ltp"]
-                        )
-
-                        volume_increment = float(
-                            future_tick.get(
-                                "volume_increment",
-                                0.0,
-                            )
-                            or 0.0
-                        )
-
-                        future_live_candle = update_live_candle(
-                            [],
-                            future_tick["timestamp"],
-                            future_price,
-                            volume_increment,
-                        )[-1]
 
                     # ------------------------------------------------
                     # HISTORICAL SPOT CANDLE BACKFILL
@@ -1377,15 +1323,6 @@ def start_backend_factory():
                                 future_tick[
                                     "timestamp"
                                 ].isoformat(),
-                            "cumulative_volume":
-                                future_tick.get(
-                                    "cumulative_volume"
-                                ),
-                            "volume_increment":
-                                future_tick.get(
-                                    "volume_increment",
-                                    0.0,
-                                ),
                         }
 
                     # ------------------------------------------------
@@ -1481,9 +1418,6 @@ def start_backend_factory():
                         "future_contract":
                             future_contract,
 
-                        "future_live_candle":
-                            future_live_candle,
-
                         # ------------------------------
                         # RAW OPTION
                         # ------------------------------
@@ -1510,6 +1444,9 @@ def start_backend_factory():
                         # ------------------------------
                         # CONNECTION / STATUS
                         # ------------------------------
+
+                        "market_status":
+                            market_status_ist(now_dt),
 
                         "websocket_connected":
                             websocket_connected,
