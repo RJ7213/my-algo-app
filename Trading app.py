@@ -3,7 +3,8 @@
 # NIFTY PAPER - SOURCE-OF-TRUTH MOBILE DASHBOARD
 # ============================================================
 #
-# READ ONLY.
+# MARKET / TRADE / HISTORY are read-only displays.
+# STRATEGY tab writes only strategy_config.json.
 #
 # IMPORTANT ARCHITECTURE:
 #
@@ -79,7 +80,6 @@ import html
 import json
 import math
 import os
-from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 import streamlit as st
@@ -99,26 +99,6 @@ st.set_page_config(
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
-STRATEGY_CONFIG_FILE = Path("strategy_config.json")
-DEFAULT_STRATEGY_CONFIG = {'version': 1, 'rsi': {'ce_min': 60.0, 'pe_max': 40.0, 'pullback_min': 45.0, 'pullback_max': 55.0, 'mode': 'HARD'}, 'ema': {'pullback_tolerance': 15.0, 'mode': 'HARD'}, 'volume': {'min_ratio': 1.2, 'mode': 'SOFT'}, 'runway': {'min_points': 15.0, 'mode': 'HARD'}, 'candle': {'min_points': 12.0, 'max_points': 25.0, 'mode': 'HARD'}, 'wick': {'max_body_ratio': 0.05, 'mode': 'HARD'}, 'oi': {'min_change_pct': 5.0, 'mode': 'HARD'}, 'flow': {'threshold': 0.15, 'mode': 'HARD'}}
-VALID_MODES = ["HARD", "SOFT", "OFF"]
-
-def load_strategy_config():
-    try:
-        with STRATEGY_CONFIG_FILE.open("r", encoding="utf-8") as f: cfg = json.load(f)
-    except Exception: cfg = {}
-    out = json.loads(json.dumps(DEFAULT_STRATEGY_CONFIG))
-    if isinstance(cfg, dict):
-        for section, values in cfg.items():
-            if section in out and isinstance(values, dict): out[section].update(values)
-    return out
-
-def save_strategy_config(cfg):
-    tmp = STRATEGY_CONFIG_FILE.with_suffix(".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2); f.flush(); os.fsync(f.fileno())
-    tmp.replace(STRATEGY_CONFIG_FILE)
-
 FILES = {
     "raw": "data_raw.json",
     "ind": "processed_indicators.json",
@@ -126,6 +106,28 @@ FILES = {
     "paper": "paper_engine_output.json",
     "journal": "trade_history.json",
 }
+CONFIG_FILE = "strategy_config.json"
+VALID_MODES = ["HARD", "SOFT", "OFF"]
+
+
+def load_strategy_config():
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_strategy_config(cfg):
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, CONFIG_FILE)
+
+
 
 
 # ============================================================
@@ -718,7 +720,7 @@ def render_header(raw, paper):
         <div class="header">
             <div>
                 <div class="header-title">📈 NIFTY PAPER</div>
-                <div class="header-sub">Paper only · Strategy configurable</div>
+                <div class="header-sub">Paper only · Read-only</div>
             </div>
             <div class="header-status {status_class}">
                 {html.escape(status_text)}<br>
@@ -1278,62 +1280,74 @@ def render_history(paper, journal):
 
 
 # ============================================================
-# STRATEGY CONTROL PANEL
+# STRATEGY SETTINGS
 # ============================================================
 
-def render_strategy_control():
+def render_strategy():
     cfg = load_strategy_config()
-    st.subheader("⚙️ Strategy Control Panel")
-    st.caption("Save changes here; indicator_calc.py and paper_engine.py reload strategy_config.json automatically. No code edit/redeploy is needed for parameter changes.")
-    with st.form("strategy_control_form"):
-        st.markdown("**RSI thresholds**")
-        c1,c2=st.columns(2)
-        pe_rsi=c1.number_input("PE RSI <",1.0,99.0,float(cfg["rsi"]["pe_max"]),1.0)
-        ce_rsi=c2.number_input("CE RSI >",1.0,99.0,float(cfg["rsi"]["ce_min"]),1.0)
-        rsi_mode=st.selectbox("RSI gate",VALID_MODES,index=VALID_MODES.index(str(cfg["rsi"]["mode"]).upper()))
-        st.markdown("**EMA / Runway / Candle / Wick**")
-        c1,c2=st.columns(2)
-        ema_tol=c1.number_input("Pullback EMA tolerance (pts)",0.0,500.0,float(cfg["ema"]["pullback_tolerance"]),1.0)
-        ema_mode=c2.selectbox("EMA gate",VALID_MODES,index=VALID_MODES.index(str(cfg["ema"]["mode"]).upper()))
-        c1,c2=st.columns(2)
-        runway=c1.number_input("Runway minimum (pts)",0.0,500.0,float(cfg["runway"]["min_points"]),1.0)
-        runway_mode=c2.selectbox("Runway gate",VALID_MODES,index=VALID_MODES.index(str(cfg["runway"]["mode"]).upper()))
-        c1,c2=st.columns(2)
-        candle_min=c1.number_input("Candle minimum (pts)",0.0,500.0,float(cfg["candle"]["min_points"]),1.0)
-        candle_max=c2.number_input("Candle maximum (pts)",0.0,500.0,float(cfg["candle"]["max_points"]),1.0)
-        candle_mode=st.selectbox("Candle gate",VALID_MODES,index=VALID_MODES.index(str(cfg["candle"]["mode"]).upper()))
-        wick_pct=st.number_input("Opposite wick max (% of body)",0.0,100.0,float(cfg["wick"]["max_body_ratio"])*100,0.5)
-        wick_mode=st.selectbox("Wick gate",VALID_MODES,index=VALID_MODES.index(str(cfg["wick"]["mode"]).upper()))
-        st.markdown("**Volume**")
-        c1,c2=st.columns(2)
-        vol_ratio=c1.number_input("Volume minimum ratio (x)",0.0,20.0,float(cfg["volume"]["min_ratio"]),0.05)
-        vol_mode=c2.selectbox("Volume gate",VALID_MODES,index=VALID_MODES.index(str(cfg["volume"]["mode"]).upper()))
-        st.caption("Volume default = SOFT. SOFT warns only; HARD blocks; OFF ignores it.")
-        st.markdown("**OI / Order Flow**")
-        c1,c2=st.columns(2)
-        oi_pct=c1.number_input("OI confirmation minimum (%)",0.0,100.0,float(cfg["oi"]["min_change_pct"]),0.5)
-        oi_mode=c2.selectbox("OI gate",VALID_MODES,index=VALID_MODES.index(str(cfg["oi"]["mode"]).upper()))
-        c1,c2=st.columns(2)
-        flow_thr=c1.number_input("Flow threshold",0.0,1.0,float(cfg["flow"]["threshold"]),0.01)
-        flow_mode=c2.selectbox("Flow gate",VALID_MODES,index=VALID_MODES.index(str(cfg["flow"]["mode"]).upper()))
-        save=st.form_submit_button("💾 SAVE STRATEGY CONFIG",use_container_width=True)
-        if save:
-            if candle_min>candle_max:
-                st.error("Candle minimum cannot be greater than maximum.")
-                return
-            cfg["rsi"].update({"pe_max":pe_rsi,"ce_min":ce_rsi,"mode":rsi_mode})
-            cfg["ema"].update({"pullback_tolerance":ema_tol,"mode":ema_mode})
-            cfg["runway"].update({"min_points":runway,"mode":runway_mode})
-            cfg["candle"].update({"min_points":candle_min,"max_points":candle_max,"mode":candle_mode})
-            cfg["wick"].update({"max_body_ratio":wick_pct/100.0,"mode":wick_mode})
-            cfg["volume"].update({"min_ratio":vol_ratio,"mode":vol_mode})
-            cfg["oi"].update({"min_change_pct":oi_pct,"mode":oi_mode})
-            cfg["flow"].update({"threshold":flow_thr,"mode":flow_mode})
-            save_strategy_config(cfg)
-            st.success("Strategy configuration saved.")
-            st.rerun()
-    st.markdown("**Active configuration**")
-    st.json(cfg,expanded=False)
+    gates = cfg.setdefault("gates", {})
+    pullback = cfg.setdefault("pullback", {})
+    rsi = cfg.setdefault("rsi", {})
+    volume = cfg.setdefault("volume", {})
+    runway = cfg.setdefault("runway", {})
+    candle = cfg.setdefault("candle", {})
+    wick = cfg.setdefault("wick", {})
+    structure_cfg = cfg.setdefault("structure", {})
+
+    section("GATE MODE")
+    cols = st.columns(2)
+    gate_names = [
+        ("RSI", "rsi"), ("EMA", "ema"), ("VOLUME", "volume"),
+        ("RUNWAY", "runway"), ("CANDLE", "candle_size"),
+        ("WICK", "opposite_wick"), ("OI", "oi"), ("FLOW", "flow"),
+    ]
+    selected = {}
+    for i, (label, key) in enumerate(gate_names):
+        with cols[i % 2]:
+            selected[key] = st.selectbox(
+                label, VALID_MODES,
+                index=VALID_MODES.index(str(gates.get(key, "HARD")).upper())
+                if str(gates.get(key, "HARD")).upper() in VALID_MODES else 0,
+                key=f"gate_{key}",
+            )
+
+    section("PULLBACK")
+    c1, c2 = st.columns(2)
+    with c1:
+        pb_ce = st.number_input("CE RSI ≥", value=float(pullback.get("ce_rsi_min", rsi.get("ce_min", 60.0))), step=1.0)
+        pb_ema = st.number_input("EMA9 distance ≤", value=float(pullback.get("ema_tolerance", 15.0)), step=1.0)
+    with c2:
+        pb_pe = st.number_input("PE RSI ≤", value=float(pullback.get("pe_rsi_max", rsi.get("pe_max", 40.0))), step=1.0)
+        vol_min = st.number_input("Option volume ratio ≥", value=float(volume.get("min_ratio", 1.20)), step=0.05, format="%.2f")
+
+    section("OTHER THRESHOLDS")
+    c1, c2 = st.columns(2)
+    with c1:
+        run_min = st.number_input("Runway points ≥", value=float(runway.get("min_points", 15.0)), step=1.0)
+        candle_min = st.number_input("Candle range min", value=float(candle.get("min_range", 12.0)), step=1.0)
+        oi_min = st.number_input("OI change % ≥", value=float(structure_cfg.get("oi_min_change_pct", 5.0)), step=0.5)
+    with c2:
+        candle_max = st.number_input("Candle range max", value=float(candle.get("max_range", 25.0)), step=1.0)
+        wick_max = st.number_input("Opposite wick/body ≤", value=float(wick.get("max_body_ratio", 0.05)), step=0.01, format="%.2f")
+        flow_min = st.number_input("Flow threshold", value=float(structure_cfg.get("flow_threshold", 0.15)), step=0.05, format="%.2f")
+
+    if st.button("SAVE STRATEGY", use_container_width=True):
+        cfg["gates"] = selected
+        cfg["pullback"] = {
+            "ce_rsi_min": float(pb_ce),
+            "pe_rsi_max": float(pb_pe),
+            "ema_tolerance": float(pb_ema),
+        }
+        cfg["volume"] = {"min_ratio": float(vol_min)}
+        cfg["runway"] = {"min_points": float(run_min)}
+        cfg["candle"] = {"min_range": float(candle_min), "max_range": float(candle_max)}
+        cfg["wick"] = {"max_body_ratio": float(wick_max)}
+        cfg["structure"] = {"oi_min_change_pct": float(oi_min), "flow_threshold": float(flow_min)}
+        cfg["version"] = max(1, int(cfg.get("version", 1))) + 1
+        save_strategy_config(cfg)
+        st.success("Strategy settings saved. Paper engine will use the new config.")
+
+    st.caption("HARD = block entry · SOFT = warning only · OFF = ignored")
 
 
 # ============================================================
@@ -1356,8 +1370,8 @@ def render_dashboard():
         [
             "📊 MARKET",
             "🎯 TRADE",
-            "⚙️ STRATEGY",
             "📒 HISTORY",
+            "⚙️ STRATEGY",
         ]
     )
 
@@ -1375,13 +1389,13 @@ def render_dashboard():
         )
 
     with tabs[2]:
-        render_strategy_control()
-
-    with tabs[3]:
         render_history(
             paper,
             journal,
         )
+
+    with tabs[3]:
+        render_strategy()
 
     last_update = raw_last_update(raw)
 
