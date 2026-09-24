@@ -1,35 +1,62 @@
 {
-  "version": 2,
-  "gates": {
-    "rsi": "HARD",
-    "ema": "HARD",
-    "volume": "SOFT",
-    "runway": "HARD",
-    "candle_size": "HARD",
-    "opposite_wick": "HARD",
-    "oi": "HARD",
-    "flow": "HARD"
-  },
-  "pullback": {
-    "ce_rsi_min": 60.0,
-    "pe_rsi_max": 40.0,
-    "ema_tolerance": 15.0
-  },
-  "volume": {
-    "min_ratio": 1.20
-  },
-  "runway": {
-    "min_points": 15.0
-  },
-  "candle": {
-    "min_range": 12.0,
-    "max_range": 25.0
-  },
-  "wick": {
-    "max_body_ratio": 0.05
-  },
-  "structure": {
-    "oi_min_change_pct": 5.0,
-    "flow_threshold": 0.15
+  "version": 1,
+  "strategies": {
+    "major_rejection": {
+      "label": "Major Rejection",
+      "gates": {
+        "rsi": "HARD",
+        "ema": "HARD",
+        "volume": "HARD",
+        "runway": "HARD",
+        "candle_size": "HARD",
+        "opposite_wick": "HARD",
+        "oi": "HARD",
+        "flow": "HARD"
+      },
+      "rsi": {"ce_min": 60.0, "pe_max": 40.0},
+      "volume": {"min_ratio": 1.20},
+      "runway": {"min_points": 15.0},
+      "candle": {"min_range": 12.0, "max_range": 25.0},
+      "wick": {"max_body_ratio": 0.05},
+      "structure": {"oi_min_change_pct": 5.0, "flow_threshold": 0.15}
+    },
+    "pullback": {
+      "label": "Pullback",
+      "gates": {
+        "rsi": "HARD",
+        "ema": "HARD",
+        "volume": "HARD",
+        "runway": "HARD",
+        "candle_size": "HARD",
+        "opposite_wick": "HARD",
+        "oi": "HARD",
+        "flow": "HARD"
+      },
+      "pullback": {"ce_rsi_min": 60.0, "pe_rsi_max": 40.0, "ema_tolerance": 15.0},
+      "volume": {"min_ratio": 1.20},
+      "runway": {"min_points": 15.0},
+      "candle": {"min_range": 12.0, "max_range": 25.0},
+      "wick": {"max_body_ratio": 0.05},
+      "structure": {"oi_min_change_pct": 5.0, "flow_threshold": 0.15}
+    },
+    "breakout": {
+      "label": "Breakout",
+      "gates": {
+        "rsi": "HARD",
+        "ema": "HARD",
+        "volume": "HARD",
+        "runway": "HARD",
+        "candle_size": "HARD",
+        "opposite_wick": "HARD",
+        "oi": "HARD",
+        "flow": "HARD"
+      },
+      "breakout": {"ce_rsi_min": 60.0, "pe_rsi_max": 40.0},
+      "volume": {"min_ratio": 1.20},
+      "runway": {"min_points": 15.0},
+      "candle": {"min_range": 12.0, "max_range": 25.0},
+      "wick": {"max_body_ratio": 0.05},
+      "structure": {"oi_min_change_pct": 5.0, "flow_threshold": 0.15}
+    }
   }
 }
