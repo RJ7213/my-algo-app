@@ -172,6 +172,33 @@ def gate_failure(mode: str, passed: bool) -> bool:
     return mode == "HARD" and not passed
 
 
+def strategy_key_for_setup(setup: str) -> str:
+    return {
+        "Major Rejection": "major_rejection",
+        "Pullback": "pullback",
+        "Breakout": "breakout",
+    }.get(setup, "")
+
+
+def effective_strategy_config(cfg: Dict[str, Any], setup: str) -> Dict[str, Any]:
+    """Return the selected strategy's settings while preserving legacy configs."""
+    selected = (cfg.get("strategies") or {}).get(strategy_key_for_setup(setup))
+    if not isinstance(selected, dict):
+        return cfg
+
+    # Selected strategy inherits the legacy root, then overrides its own fields.
+    import copy
+    merged = copy.deepcopy(cfg)
+    for key, value in selected.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key].update(value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    if isinstance(selected.get("gates"), dict):
+        merged["gates"] = dict(selected["gates"])
+    return merged
+
+
 def safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
     try:
         if value is None or value == "":
@@ -767,6 +794,8 @@ def choose_setup(
     """
     cfg = load_strategy_config()
     global OI_CONFIRM_MIN_PCT, FLOW_CONFIRM_THRESHOLD
+    # Thresholds/gates are selected after setup identification so each
+    # strategy can have its own independent configuration.
     OI_CONFIRM_MIN_PCT = cfg_float(cfg, "structure", "oi_min_change_pct", default=OI_CONFIRM_MIN_PCT)
     FLOW_CONFIRM_THRESHOLD = cfg_float(cfg, "structure", "flow_threshold", default=FLOW_CONFIRM_THRESHOLD)
     modes = {name: gate_mode(cfg, name) for name in (
@@ -849,6 +878,23 @@ def choose_setup(
                 setup = "Breakout"
                 setup_level = breakout_level
                 setup_reason = breakout_reason
+
+    # From this point onward, ALL configurable gates/thresholds come from
+    # the identified strategy. Legacy root values remain the fallback.
+    cfg = effective_strategy_config(cfg, setup)
+    OI_CONFIRM_MIN_PCT = cfg_float(cfg, "structure", "oi_min_change_pct", default=OI_CONFIRM_MIN_PCT)
+    FLOW_CONFIRM_THRESHOLD = cfg_float(cfg, "structure", "flow_threshold", default=FLOW_CONFIRM_THRESHOLD)
+    modes = {name: gate_mode(cfg, name) for name in (
+        "rsi", "ema", "volume", "runway", "candle_size", "opposite_wick", "oi", "flow"
+    )}
+    volume_min = cfg_float(cfg, "volume", "min_ratio", default=VOLUME_PASS_RATIO)
+    runway_min = cfg_float(cfg, "runway", "min_points", default=RUNWAY_MIN)
+    candle_min = cfg_float(cfg, "candle", "min_range", default=CANDLE_MIN)
+    candle_max = cfg_float(cfg, "candle", "max_range", default=CANDLE_MAX)
+    wick_max = cfg_float(cfg, "wick", "max_body_ratio", default=OPPOSITE_WICK_BODY_MAX)
+    pullback_tolerance = cfg_float(cfg, "pullback", "ema_tolerance", default=PULLBACK_EMA_TOLERANCE)
+    pullback_ce_rsi = cfg_float(cfg, "pullback", "ce_rsi_min", default=60.0)
+    pullback_pe_rsi = cfg_float(cfg, "pullback", "pe_rsi_max", default=40.0)
 
     if not option_type:
         support_level = None
@@ -945,8 +991,10 @@ def choose_setup(
         rsi_pass = (signal_rsi >= pullback_ce_rsi if option_type == "CE" else signal_rsi <= pullback_pe_rsi)
         rsi_reason = f"Pullback directional RSI (CE >= {pullback_ce_rsi:g}, PE <= {pullback_pe_rsi:g})"
     else:
-        rsi_pass = signal_rsi >= 60.0 if option_type == "CE" else signal_rsi <= 40.0
-        rsi_reason = "Breakout RSI directional threshold"
+        breakout_ce_rsi = cfg_float(cfg, "breakout", "ce_rsi_min", default=60.0)
+        breakout_pe_rsi = cfg_float(cfg, "breakout", "pe_rsi_max", default=40.0)
+        rsi_pass = signal_rsi >= breakout_ce_rsi if option_type == "CE" else signal_rsi <= breakout_pe_rsi
+        rsi_reason = f"Breakout RSI directional threshold (CE >= {breakout_ce_rsi:g}, PE <= {breakout_pe_rsi:g})"
 
     # -------------------------
     # EMA GATE
