@@ -1,69 +1,56 @@
-# NIFTY Paper Engine — Implementation Notes
+NIFTY ALGO — Strategy Settings Integration
 
-## Final 6-file package
+WHAT THIS VERSION DOES
+1. Flutter STRATEGY tab loads GET /api/strategy.
+2. Major Rejection, Pullback and Breakout have separate gate settings.
+3. Each gate can be HARD / SOFT / OFF.
+4. Threshold settings are saved through PUT /api/strategy.
+5. paper_engine.py selects the configuration of the strategy it actually detected.
+6. Paper engine remains the authority for the actual entry decision.
+7. No broker order placement is added; mode remains PAPER_ONLY.
 
-1. `indicator_calc.py` — completed-candle technical calculations, setup identification inputs, Pullback logic and exact selected-option volume tracking.
-2. `paper_engine.py` — strategy decision, configurable gate evaluation and paper execution. No live orders.
-3. `market_structure.py` — OI, support/resistance, option order-flow and futures structure only. It does not create trade signals.
-4. `Trading app.py` — compact/mobile-style Streamlit dashboard with MARKET, TRADE, HISTORY and STRATEGY tabs.
-5. `strategy_config.json` — single source for gate modes and strategy thresholds.
-6. `IMPLEMENTATION_NOTES.md` — this document.
+RENDER FILES TO REPLACE
+- api_server.py
+- paper_engine.py
+- strategy_config.json
 
-## Gate configuration
+FLUTTER FILE
+- Replace lib/main.dart with main.dart.
 
-Every gate is controlled by `strategy_config.json` and can be changed from the STRATEGY tab:
+IMPORTANT
+- Keep the existing run/start script.
+- Flask/flask-cors are already required by the current API migration.
+- Before deploying, make a backup of the current paper_engine.py and strategy_config.json.
+- The existing trade ledger/state files are not deleted by these changes.
 
-- `HARD`: a failed gate blocks entry.
-- `SOFT`: a failed gate is reported as a warning but does not block entry.
-- `OFF`: the gate is ignored for entry decisions.
+OPTIONAL SECURITY
+The PUT /api/strategy endpoint supports an environment variable:
+STRATEGY_API_KEY
 
-Configured gates:
+If you set STRATEGY_API_KEY in Render, run Flutter with:
+--dart-define=STRATEGY_API_KEY=YOUR_KEY
 
-- RSI
-- EMA
-- Volume
-- Runway
-- Candle Size
-- Opposite Wick
-- OI
-- Flow
+For a paper-only personal test, the endpoint works without this variable, but a public PUT endpoint can be changed by anyone who discovers it. Setting the key is recommended.
 
-There is no permanent `Volume = SOFT` rule in the Python decision logic. The current default is stored in JSON so it can be changed to `HARD`, `SOFT` or `OFF` from the dashboard.
+DEPLOY ORDER
+1. Replace api_server.py
+2. Replace paper_engine.py
+3. Replace strategy_config.json
+4. Commit + push to GitHub
+5. Render redeploy
+6. Verify:
+   /api/health
+   /api/dashboard
+   /api/strategy
+7. Replace Flutter lib/main.dart
+8. Run:
+   flutter clean
+   flutter pub get
+   flutter run
 
-## Pullback change
+BEHAVIOR
+When Pullback settings are saved, only the Pullback configuration is used when the paper engine identifies a Pullback setup.
+When Breakout settings are saved, only Breakout configuration is used for a Breakout setup.
+When Major Rejection settings are saved, only Major Rejection configuration is used for that setup.
 
-The previous 45–55 RSI band is removed.
-
-Pullback RSI is directional and configurable:
-
-- CE Pullback: RSI >= `pullback.ce_rsi_min`
-- PE Pullback: RSI <= `pullback.pe_rsi_max`
-- Price must remain within `pullback.ema_tolerance` points of EMA9.
-
-Current JSON defaults are CE >= 60, PE <= 40 and EMA9 distance <= 15 points.
-
-## Option volume
-
-The volume gate is tied to the **exact selected option contract** (`strike:CE` or `strike:PE`), not NIFTY futures volume.
-
-The broker field is cumulative day volume. The indicator engine tracks cumulative snapshots by 5-minute bucket and converts them into bucket-volume deltas. The latest completed bucket is compared with previous completed buckets to produce the volume ratio.
-
-After a restart, there may be insufficient option-volume history. In that case the value is reported as `DATA WAIT`/invalid rather than pretending that cumulative day volume is a 5-minute candle volume.
-
-## Candle timing
-
-Entries are based on the latest completed 5-minute candle. The currently forming candle is display-only and cannot create a new entry.
-
-## Paper execution
-
-`paper_engine.py` remains paper-only. It uses the actual selected option quote from the raw option chain and requires a fresh option quote before creating an entry. No broker order placement is added.
-
-## Dashboard ownership
-
-The dashboard displays engine outputs. It does not independently calculate RSI, EMA, OI, flow, setup or trade decisions.
-
-The STRATEGY tab only edits `strategy_config.json`. The paper engine remains the authority for entry decisions.
-
-## Deployment
-
-Keep `data_worker.py`, `run.sh`, `requirements.txt` and any existing persistence module from the current deployment alongside these six files. This six-file package is the strategy/dashboard layer requested here; it does not replace the raw-data worker.
+The setup-detection algorithms themselves remain the existing ones. The new independent configuration controls the gates and thresholds already consumed by paper_engine.py.
