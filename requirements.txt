@@ -8,3 +8,5 @@ requests
 smartapi-python
 fastapi
 uvicorn
+Flask
+flask-cors
