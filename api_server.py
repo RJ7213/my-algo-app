@@ -1,205 +1,103 @@
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pathlib import Path
+"""
+api_server.py
+-------------
+Read-only HTTP API for the Flutter NIFTY paper-trading dashboard.
+
+IMPORTANT:
+- Does NOT calculate strategy signals.
+- Does NOT place broker orders.
+- Only reads JSON snapshots produced by existing workers.
+"""
+
+from __future__ import annotations
+
 import json
 import os
-from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any
 
-app = FastAPI(title="NIFTY Paper Trading API")
+from flask import Flask, jsonify
+from flask_cors import CORS
 
-# Android/Web access
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = Flask(__name__)
+CORS(app)
 
-IST = timezone(timedelta(hours=5, minutes=30))
+BASE_DIR = Path(__file__).resolve().parent
 
 FILES = {
-    "raw": Path("data_raw.json"),
-    "indicators": Path("processed_indicators.json"),
-    "structure": Path("processed_market_structure.json"),
-    "paper": Path("paper_engine_output.json"),
-    "history": Path("trade_history.json"),
-    "strategy": Path("strategy_config.json"),
+    "raw": BASE_DIR / "data_raw.json",
+    "indicators": BASE_DIR / "processed_indicators.json",
+    "market_structure": BASE_DIR / "processed_market_structure.json",
+    "paper": BASE_DIR / "paper_engine_output.json",
 }
 
-API_KEY = os.getenv("ANDROID_API_KEY", "")
 
-
-def check_api_key(x_api_key: str = ""):
-    if API_KEY and x_api_key != API_KEY:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid API key"
-        )
-
-
-def load_json(path: Path, default=None):
-    if not path.exists():
-        return default
-
+def load_json(path: Path) -> Any:
     try:
         with path.open("r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
-        return default
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
 
 
-def save_json_atomic(path: Path, data):
-    tmp = path.with_suffix(path.suffix + ".tmp")
+def build_dashboard() -> dict:
+    raw = load_json(FILES["raw"])
+    indicators = load_json(FILES["indicators"])
+    structure = load_json(FILES["market_structure"])
+    paper = load_json(FILES["paper"])
 
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(
-            data,
-            f,
-            indent=2,
-            ensure_ascii=False,
-            default=str
-        )
-        f.flush()
-        os.fsync(f.fileno())
+    if not isinstance(raw, dict):
+        raw = {}
+    if not isinstance(indicators, dict):
+        indicators = {}
+    if not isinstance(structure, dict):
+        structure = {}
+    if not isinstance(paper, dict):
+        paper = {}
 
-    tmp.replace(path)
+    return {
+        "api_version": 1,
+        "mode": "PAPER_ONLY",
+        "live_orders": False,
+        "raw": raw,
+        "indicators": indicators,
+        "market_structure": structure,
+        "paper": paper,
+        "source_files": {
+            "raw": FILES["raw"].name,
+            "indicators": FILES["indicators"].name,
+            "market_structure": FILES["market_structure"].name,
+            "paper": FILES["paper"].name,
+        },
+    }
 
 
 @app.get("/")
 def root():
-    return {
-        "app": "NIFTY Paper Trading API",
-        "status": "running"
-    }
+    return jsonify({
+        "service": "NIFTY Paper Trading API",
+        "status": "running",
+        "mode": "PAPER_ONLY",
+        "live_orders": False,
+        "endpoints": ["/api/health", "/api/dashboard"],
+    })
 
 
-@app.get("/health")
+@app.get("/api/health")
 def health():
-    return {
-        "ok": True,
-        "time_ist": datetime.now(IST).isoformat()
-    }
+    return jsonify({
+        "status": "ok",
+        "mode": "PAPER_ONLY",
+        "live_orders": False,
+        "files": {name: path.exists() for name, path in FILES.items()},
+    })
 
-
-# ============================================================
-# MARKET
-# ============================================================
-
-@app.get("/api/market")
-def market(x_api_key: str = Header(default="")):
-
-    check_api_key(x_api_key)
-
-    raw = load_json(FILES["raw"], {})
-    indicators = load_json(FILES["indicators"], {})
-    structure = load_json(FILES["structure"], {})
-
-    return {
-        "server_time_ist": datetime.now(IST).isoformat(),
-
-        "market": raw,
-        "indicators": indicators,
-        "structure": structure,
-    }
-
-
-# ============================================================
-# TRADE
-# ============================================================
-
-@app.get("/api/trade")
-def trade(x_api_key: str = Header(default="")):
-
-    check_api_key(x_api_key)
-
-    paper = load_json(FILES["paper"], {})
-
-    return {
-        "server_time_ist": datetime.now(IST).isoformat(),
-        "paper": paper,
-    }
-
-
-# ============================================================
-# HISTORY
-# ============================================================
-
-@app.get("/api/history")
-def history(x_api_key: str = Header(default="")):
-
-    check_api_key(x_api_key)
-
-    history_data = load_json(FILES["history"], {})
-
-    return {
-        "server_time_ist": datetime.now(IST).isoformat(),
-        "history": history_data,
-    }
-
-
-# ============================================================
-# STRATEGY CONFIG
-# ============================================================
-
-@app.get("/api/strategy")
-def get_strategy(x_api_key: str = Header(default="")):
-
-    check_api_key(x_api_key)
-
-    config = load_json(FILES["strategy"], {})
-
-    return {
-        "strategy": config
-    }
-
-
-@app.put("/api/strategy")
-def update_strategy(
-    config: dict,
-    x_api_key: str = Header(default="")
-):
-
-    check_api_key(x_api_key)
-
-    if not isinstance(config, dict):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid strategy configuration"
-        )
-
-    save_json_atomic(
-        FILES["strategy"],
-        config
-    )
-
-    return {
-        "success": True,
-        "message": "Strategy configuration updated"
-    }
-
-
-# ============================================================
-# DASHBOARD SNAPSHOT
-# ============================================================
 
 @app.get("/api/dashboard")
-def dashboard(x_api_key: str = Header(default="")):
+def dashboard():
+    return jsonify(build_dashboard())
 
-    check_api_key(x_api_key)
 
-    raw = load_json(FILES["raw"], {})
-    indicators = load_json(FILES["indicators"], {})
-    structure = load_json(FILES["structure"], {})
-    paper = load_json(FILES["paper"], {})
-    history = load_json(FILES["history"], {})
-
-    return {
-        "server_time_ist": datetime.now(IST).isoformat(),
-
-        "market": raw,
-        "indicators": indicators,
-        "structure": structure,
-        "paper": paper,
-        "history": history,
-    }
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
