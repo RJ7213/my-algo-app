@@ -28,10 +28,23 @@ _ENABLED = bool(_URL and _KEY)
 _LAST_SYNC = 0.0
 _LAST_HASH = ""
 _CACHED_STATE: Dict[str, Any] = {}
+_LAST_ERROR = ""
 
 
 def enabled() -> bool:
     return _ENABLED
+
+
+def status() -> Dict[str, Any]:
+    return {
+        "enabled": _ENABLED,
+        "table": TABLE,
+        "row_id": ROW_ID,
+        "last_sync_epoch": _LAST_SYNC or None,
+        "last_sync_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(_LAST_SYNC)) if _LAST_SYNC else None,
+        "last_error": _LAST_ERROR or None,
+        "cached_state": bool(_CACHED_STATE),
+    }
 
 
 def _headers(prefer: Optional[str] = None) -> Dict[str, str]:
@@ -54,7 +67,7 @@ def _request(method: str, url: str, body: Optional[Dict[str, Any]] = None) -> An
 
 
 def load_bundle() -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
-    global _CACHED_STATE
+    global _CACHED_STATE, _LAST_ERROR
     if not _ENABLED:
         return None
     try:
@@ -72,6 +85,7 @@ def load_bundle() -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
         if not isinstance(state, dict):
             state = {}
         _CACHED_STATE = dict(state)
+        _LAST_ERROR = ""
         logging.info("Recovered paper engine ledger from Supabase")
         return ledger, state
     except Exception as exc:
@@ -80,7 +94,7 @@ def load_bundle() -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
 
 
 def save_bundle(ledger: Dict[str, Any], state: Dict[str, Any], force: bool = False) -> bool:
-    global _LAST_SYNC, _LAST_HASH, _CACHED_STATE
+    global _LAST_SYNC, _LAST_HASH, _CACHED_STATE, _LAST_ERROR
     if not _ENABLED:
         return False
     _CACHED_STATE = dict(state)
@@ -92,12 +106,14 @@ def save_bundle(ledger: Dict[str, Any], state: Dict[str, Any], force: bool = Fal
     if not force and (now - _LAST_SYNC) < MIN_SYNC_SEC:
         return True
     try:
-        url = f"{_URL}/rest/v1/{TABLE}"
+        url = f"{_URL}/rest/v1/{TABLE}?on_conflict=id"
         _request("POST", url, {"id": ROW_ID, "payload": payload})
         _LAST_SYNC = now
         _LAST_HASH = digest
+        _LAST_ERROR = ""
         return True
     except (HTTPError, URLError, OSError, Exception) as exc:
+        _LAST_ERROR = str(exc)
         logging.warning("Supabase save unavailable; local JSON remains active: %s", exc)
         return False
 
