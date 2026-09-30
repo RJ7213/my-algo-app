@@ -100,7 +100,7 @@ LEVEL_MERGE_DISTANCE = 20.0
 MORNING_BOX_START = "09:15"
 MORNING_BOX_END = "09:30"
 CONTINUOUS_SESSION_START = dtime(9, 15)
-CONTINUOUS_SESSION_END = dtime(15, 15)
+CONTINUOUS_SESSION_END = dtime(15, 30)
 
 
 # ============================================================
@@ -667,6 +667,11 @@ def calculate_live_snapshot(
     }
 
 
+
+def candle_bucket(dt):
+    minute = (dt.minute // 5) * 5
+    return dt.replace(minute=minute, second=0, microsecond=0)
+
 # ============================================================
 # COMPLETED-CANDLE STRATEGY
 # ============================================================
@@ -676,7 +681,7 @@ def calculate_closed_candle_signal(
     spot,
     day_high,
     day_low,
-    volume_df=None,
+    raw_option_volume_candles=None,
 ):
     """
     ALL entry logic is based on the completed candle (-2).
@@ -905,42 +910,31 @@ def calculate_closed_candle_signal(
 
     # --------------------------------------------------------
     # Volume
-    #
-    # NIFTY Spot is an index and its candle volume is zero.
-    # Use completed NIFTY Futures candles for the volume gate.
     # --------------------------------------------------------
-    volume_source = (
-        volume_df
-        if (
-            volume_df is not None
-            and not volume_df.empty
-            and len(volume_df) >= 22
-        )
-        else None
-    )
+    # Strategy volume is the traded volume of the actual option premium
+    # selected by this completed NIFTY setup (e.g. 24700:CE), never futures volume.
+    option_volume_history = raw_option_volume_candles if isinstance(raw_option_volume_candles, dict) else {}
+    option_volume_key = f"{int(option_strike)}:{str(otype).upper()}" if otype in ("CE", "PE") else None
+    option_rows = option_volume_history.get(option_volume_key, []) if option_volume_key else []
 
-    if volume_source is not None:
-        volume_window = pd.to_numeric(
-            volume_source["volume"].iloc[-22:-2],
-            errors="coerce",
-        )
-        current_volume_raw = pd.to_numeric(
-            pd.Series([volume_source["volume"].iloc[-2]]),
-            errors="coerce",
-        ).iloc[0]
-        current_volume = (
-            float(current_volume_raw)
-            if not pd.isna(current_volume_raw)
-            else 0.0
-        )
-        positive_window = volume_window[
-            volume_window > 0
-        ]
-        vol_avg = (
-            float(positive_window.mean())
-            if not positive_window.empty
-            else 0.0
-        )
+    completed_option_rows = []
+    current_bucket = candle_bucket(now_ist())
+    for rowv in option_rows if isinstance(option_rows, list) else []:
+        try:
+            dtv = datetime.fromisoformat(str(rowv[0]))
+            if dtv.tzinfo is None:
+                dtv = dtv.replace(tzinfo=IST)
+            if dtv < current_bucket and len(rowv) >= 2:
+                completed_option_rows.append((dtv, float(rowv[1] or 0.0)))
+        except Exception:
+            continue
+    completed_option_rows.sort(key=lambda x: x[0])
+
+    if len(completed_option_rows) >= 21:
+        current_volume = max(0.0, completed_option_rows[-1][1])
+        volume_window = pd.Series([x[1] for x in completed_option_rows[-21:-1]], dtype="float64")
+        positive_window = volume_window[volume_window > 0]
+        vol_avg = float(positive_window.mean()) if not positive_window.empty else 0.0
     else:
         current_volume = 0.0
         vol_avg = 0.0
@@ -1144,6 +1138,12 @@ def calculate_closed_candle_signal(
         "volume_ratio":
             vol_ratio,
 
+        "volume_source":
+            "NIFTY_FUTURES_5M" if volume_source is not None else "WAITING_FOR_FUTURES_5M",
+
+        "volume_data_valid":
+            bool(vol_data_valid),
+
         "runway_status":
             runway_status,
 
@@ -1307,7 +1307,7 @@ def start_indicator_engine():
                 )
             )
 
-            future_df = build_dataframe(raw.get("future_candles", []))
+            raw_option_volume_candles = raw.get("option_volume_candles", {})
             level_engine = build_level_engine(df, spot, day_high, day_low)
 
             # ----------------------------------------------------
@@ -1343,7 +1343,7 @@ def start_indicator_engine():
                     spot,
                     day_high,
                     day_low,
-                    future_df,
+                    raw_option_volume_candles,
                 )
             )
 
