@@ -73,6 +73,9 @@ NIFTY_SPOT_TOKEN = os.getenv("NIFTY_SPOT_TOKEN", "99926000")
 DATA_RAW_FILE = "data_raw.json"
 CANDLE_CACHE_FILE = "candle_cache.json"
 CONTRACT_CACHE_FILE = "option_contract_cache.json"
+FUTURE_CANDLE_CACHE_FILE = "future_candle_cache.json"
+OPTION_OI_BASELINE_FILE = "option_oi_baseline.json"
+OPTION_VOLUME_CACHE_FILE = "option_volume_cache.json"
 
 
 # ============================================================
@@ -86,9 +89,9 @@ def now_ist():
 def market_status_ist(dt):
     """Return trading-session status using IST clock."""
     current = dt.astimezone(IST).time()
-    if current >= datetime.strptime("09:15", "%H:%M").time() and current < datetime.strptime("15:15", "%H:%M").time():
+    if current >= datetime.strptime("09:15", "%H:%M").time() and current < datetime.strptime("15:30", "%H:%M").time():
         return "OPEN"
-    if current >= datetime.strptime("15:15", "%H:%M").time() and current < datetime.strptime("15:35", "%H:%M").time():
+    if current >= datetime.strptime("15:30", "%H:%M").time() and current < datetime.strptime("15:35", "%H:%M").time():
         return "CAS"
     return "CLOSED"
 
@@ -570,30 +573,18 @@ def merge_historical_with_live(
 # ============================================================
 
 def parse_tick(message):
-    """
-    SmartWebSocketV2 FULL mode fields are broker/API dependent.
-    We read the fields safely and return only raw market data.
-
-    No indicators or strategy calculations are performed.
-    """
-
+    """Normalize the SmartWebSocketV2 decoded packet without dropping fields."""
     if not isinstance(message, dict):
         return None
 
     token = str(message.get("token", ""))
-
-    raw_price = message.get("last_traded_price")
-
-    price = safe_float(raw_price)
-
-    if price is None:
+    raw_price = safe_float(message.get("last_traded_price"))
+    if raw_price is None:
         return None
 
-    # SmartAPI LTP is normally paise.
-    price /= 100.0
+    price = raw_price / 100.0
 
     ts_raw = message.get("exchange_timestamp")
-
     if ts_raw is not None:
         try:
             ts = datetime.fromtimestamp(
@@ -605,25 +596,133 @@ def parse_tick(message):
     else:
         ts = now_ist()
 
-    # FULL mode may provide cumulative traded volume.
-    cumulative_volume = None
-
-    for key in (
-        "volume_trade_for_the_day",
-        "volume_traded_today",
-        "volume_trade",
-    ):
-        if message.get(key) is not None:
-            cumulative_volume = safe_float(message.get(key))
-            if cumulative_volume is not None:
-                break
-
     return {
         "token": token,
         "ltp": price,
         "timestamp": ts,
-        "cumulative_volume": cumulative_volume,
+        "exchange_timestamp": ts.isoformat(),
+        "last_traded_quantity": safe_float(message.get("last_traded_quantity"), 0.0) or 0.0,
+        "average_traded_price": (safe_float(message.get("average_traded_price"), 0.0) or 0.0) / 100.0,
+        "cumulative_volume": safe_float(message.get("volume_trade_for_the_day"), 0.0) or 0.0,
+        "total_buy_quantity": safe_float(message.get("total_buy_quantity"), 0.0) or 0.0,
+        "total_sell_quantity": safe_float(message.get("total_sell_quantity"), 0.0) or 0.0,
+        "open_interest": safe_float(message.get("open_interest"), 0.0) or 0.0,
+        "best_5_buy_data": message.get("best_5_buy_data") if isinstance(message.get("best_5_buy_data"), list) else [],
+        "best_5_sell_data": message.get("best_5_sell_data") if isinstance(message.get("best_5_sell_data"), list) else [],
+        "subscription_mode": message.get("subscription_mode_val") or message.get("subscription_mode"),
     }
+
+
+def fetch_historical_candles(api, exchange, token, interval="FIVE_MINUTE", days=3):
+    """Fetch startup history once. Live candles are then maintained from WebSocket ticks."""
+    if not token:
+        return []
+    now_dt = now_ist()
+    from_d = (now_dt - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+    to_d = now_dt.strftime("%Y-%m-%d %H:%M")
+    try:
+        res = api.getCandleData({
+            "exchange": exchange,
+            "symboltoken": str(token),
+            "interval": interval,
+            "fromdate": from_d,
+            "todate": to_d,
+        })
+        if res and res.get("status") and res.get("data"):
+            return valid_candles(res.get("data")) or []
+    except Exception as exc:
+        logging.warning("Historical %s %s candle error: %s", exchange, token, exc)
+    return []
+
+
+def update_future_live_candle(candles, tick, previous_cumulative_volume):
+    """Build continuous 5-minute futures candles from cumulative exchange volume."""
+    if not tick:
+        return candles, previous_cumulative_volume
+    ts = tick["timestamp"]
+    price = float(tick["ltp"])
+    cumulative = float(tick.get("cumulative_volume") or 0.0)
+    delta = 0.0
+    if previous_cumulative_volume is not None and cumulative >= previous_cumulative_volume:
+        delta = cumulative - previous_cumulative_volume
+    elif previous_cumulative_volume is not None and cumulative < previous_cumulative_volume:
+        # New trading day / broker reset. Do not inject a huge negative or positive volume.
+        delta = 0.0
+
+    bucket = candle_bucket(ts).isoformat()
+    if not candles:
+        candles.append([bucket, price, price, price, price, delta])
+        return candles, cumulative
+
+    last = candles[-1]
+    last_bucket = str(last[0])
+    if last_bucket == bucket:
+        last[2] = max(float(last[2]), price)
+        last[3] = min(float(last[3]), price)
+        last[4] = price
+        last[5] = max(0.0, float(last[5] or 0.0)) + delta
+    elif bucket > last_bucket:
+        candles.append([bucket, price, price, price, price, delta])
+
+    return candles[-300:], cumulative
+
+
+def load_option_volume_state(today_str):
+    cached = load_json(OPTION_VOLUME_CACHE_FILE, {}) or {}
+    if not isinstance(cached, dict) or cached.get("date") != today_str:
+        return {"date": today_str, "last_volume": {}, "candles": {}}
+    if not isinstance(cached.get("last_volume"), dict):
+        cached["last_volume"] = {}
+    if not isinstance(cached.get("candles"), dict):
+        cached["candles"] = {}
+    return cached
+
+
+def update_option_volume_state(state, key, tick):
+    """Build 5-minute traded-volume candles from the broker's cumulative day volume."""
+    if not isinstance(state, dict) or not key or not isinstance(tick, dict):
+        return
+    cumulative = safe_float(tick.get("cumulative_volume"), None)
+    if cumulative is None or cumulative < 0:
+        return
+    ts = tick.get("timestamp")
+    if not isinstance(ts, datetime):
+        return
+    bucket = candle_bucket(ts).isoformat()
+    last_map = state.setdefault("last_volume", {})
+    candles_map = state.setdefault("candles", {})
+    previous = safe_float(last_map.get(key), None)
+    if previous is None:
+        delta = 0.0
+    elif cumulative >= previous:
+        delta = cumulative - previous
+    else:
+        # Broker day-volume reset; never inject a negative/huge volume spike.
+        delta = 0.0
+    last_map[key] = cumulative
+    rows = candles_map.setdefault(key, [])
+    if rows and str(rows[-1][0]) == bucket:
+        rows[-1][1] = max(0.0, float(rows[-1][1] or 0.0)) + max(0.0, delta)
+    else:
+        if not rows or bucket > str(rows[-1][0]):
+            rows.append([bucket, max(0.0, delta)])
+    candles_map[key] = rows[-80:]
+
+
+def save_option_volume_state(state):
+    try:
+        # Keep only recent contracts/candles so data_raw.json stays compact.
+        candles = state.get("candles", {}) if isinstance(state, dict) else {}
+        trimmed = {k: v[-80:] for k, v in candles.items() if isinstance(v, list)}
+        payload = {
+            "date": state.get("date"),
+            "last_volume": state.get("last_volume", {}),
+            "candles": trimmed,
+            "saved_at": now_ist().isoformat(),
+        }
+        atomic_write_json(OPTION_VOLUME_CACHE_FILE, payload)
+    except Exception as exc:
+        logging.debug("Option volume cache save error: %s", exc)
 
 
 # ============================================================
@@ -734,8 +833,42 @@ def start_backend_factory():
                 "option": None,
             }
 
+            option_ticks = {}
+            option_token_to_key = {
+                str(contract["symboltoken"]): key
+                for key, contract in option_master.items()
+                if contract.get("symboltoken")
+            }
             option_contract = None
             option_hint_key = None
+            option_oi_baseline = load_json(OPTION_OI_BASELINE_FILE, {}) or {}
+            baseline_date = str(now_ist().date())
+            if option_oi_baseline.get("date") != baseline_date:
+                option_oi_baseline = {"date": baseline_date, "values": {}}
+
+            option_volume_state = load_option_volume_state(baseline_date)
+            last_option_volume_save = 0.0
+
+            future_candles = []
+            future_last_cumulative_volume = None
+            if future_contract:
+                cached_future = load_json(FUTURE_CANDLE_CACHE_FILE, {}) or {}
+                if (cached_future.get("token") == str(future_contract.get("symboltoken"))
+                        and isinstance(cached_future.get("candles"), list)):
+                    future_candles = valid_candles(cached_future.get("candles")) or []
+                if not future_candles:
+                    future_candles = fetch_historical_candles(
+                        api, "NFO", future_contract.get("symboltoken"), "FIVE_MINUTE", days=3
+                    )
+                if future_candles:
+                    try:
+                        atomic_write_json(FUTURE_CANDLE_CACHE_FILE, {
+                            "token": str(future_contract.get("symboltoken")),
+                            "saved_at": now_ist().isoformat(),
+                            "candles": future_candles,
+                        })
+                    except Exception:
+                        pass
 
             # Current live 5-min spot candle.
             spot_live_candle = None
@@ -843,27 +976,27 @@ def start_backend_factory():
                         )
 
                     # --------------------------------------------
-                    # OPTION - FULL MODE
+                    # FULL NIFTY OPTION CHAIN - SNAP QUOTE
                     # --------------------------------------------
-
-                    if option_contract:
-
+                    # Subscribe once to the current NIFTY option master.
+                    # SmartAPI allows up to 1000 token subscriptions per
+                    # WebSocket session; the current NIFTY master is well
+                    # below that limit. Chunking keeps requests manageable.
+                    option_tokens = list(option_token_to_key.keys())
+                    chunk_size = 200
+                    for i in range(0, len(option_tokens), chunk_size):
+                        chunk = option_tokens[i:i + chunk_size]
+                        if not chunk:
+                            continue
                         sws.subscribe(
-                            "nifty-option",
+                            f"nifty-options-{i // chunk_size}",
                             3,
-                            [
-                                {
-                                    "exchangeType": 2,
-                                    "tokens": [
-                                        str(
-                                            option_contract[
-                                                "symboltoken"
-                                            ]
-                                        )
-                                    ],
-                                }
-                            ],
+                            [{"exchangeType": 2, "tokens": chunk}],
                         )
+                    logging.info(
+                        "NIFTY option-chain SNAP_QUOTE subscription active: %d contracts",
+                        len(option_tokens),
+                    )
 
                 except Exception as exc:
                     logging.error(
@@ -898,17 +1031,20 @@ def start_backend_factory():
 
                             ticks["future"] = tick
 
-                        elif (
-                            option_contract
-                            and token
-                            == str(
-                                option_contract[
-                                    "symboltoken"
-                                ]
-                            )
-                        ):
+                        elif token in option_token_to_key:
 
-                            ticks["option"] = tick
+                            option_ticks[token] = tick
+                            update_option_volume_state(
+                                option_volume_state,
+                                option_token_to_key[token],
+                                tick,
+                            )
+
+                            if (
+                                option_contract
+                                and token == str(option_contract["symboltoken"])
+                            ):
+                                ticks["option"] = tick
 
                 except Exception as exc:
                     logging.debug(
@@ -1184,124 +1320,106 @@ def start_backend_factory():
                             )
 
                     # ------------------------------------------------
-                    # OPTION CONTRACT CHANGE
                     # ------------------------------------------------
+                    # SELECTED OPTION CONTRACT
+                    # ------------------------------------------------
+                    # All option contracts are already subscribed. We only
+                    # select the contract needed by paper_engine; no repeated
+                    # subscribe/unsubscribe is required.
 
-                    if (
-                        desired_hint
-                        and desired_hint != option_hint_key
-                    ):
-
-                        strike_s, opt_type = (
-                            desired_hint.split(":", 1)
+                    desired_hint = None
+                    strat = load_json("strategy_signal.json", {})
+                    if isinstance(strat, dict) and strat.get("otype") and strat.get("option_strike") is not None:
+                        desired_hint = (
+                            f"{int(float(strat['option_strike']))}:"
+                            f"{str(strat['otype']).upper()}"
                         )
 
+                    if desired_hint:
                         resolved = resolve_option(
-                            master,
-                            persistent_contract_cache,
-                            float(strike_s),
-                            opt_type,
+                            master, persistent_contract_cache,
+                            float(desired_hint.split(":", 1)[0]),
+                            desired_hint.split(":", 1)[1],
                             now_dt.date(),
                         )
-
                         if resolved:
-
-                            old_token = (
-                                option_contract[
-                                    "symboltoken"
-                                ]
-                                if option_contract
-                                else None
-                            )
-
-                            new_token = str(
-                                resolved["symboltoken"]
-                            )
-
-                            if old_token != new_token:
-
-                                if old_token:
-
-                                    try:
-                                        sws.unsubscribe(
-                                            "nifty-option",
-                                            3,
-                                            [
-                                                {
-                                                    "exchangeType": 2,
-                                                    "tokens": [
-                                                        str(old_token)
-                                                    ],
-                                                }
-                                            ],
-                                        )
-                                    except Exception:
-                                        pass
-
-                                option_contract = resolved
-                                option_hint_key = desired_hint
-
-                                with tick_lock:
-                                    ticks["option"] = None
-
-                                try:
-
-                                    sws.subscribe(
-                                        "nifty-option",
-                                        3,
-                                        [
-                                            {
-                                                "exchangeType": 2,
-                                                "tokens": [
-                                                    str(
-                                                        option_contract[
-                                                            "symboltoken"
-                                                        ]
-                                                    )
-                                                ],
-                                            }
-                                        ],
-                                    )
-
-                                    logging.info(
-                                        "Option subscription active: %s",
-                                        option_contract[
-                                            "tradingsymbol"
-                                        ],
-                                    )
-
-                                except Exception as exc:
-                                    logging.warning(
-                                        "Option subscribe error: %s",
-                                        exc,
-                                    )
-
-                            else:
-
-                                option_contract = resolved
-                                option_hint_key = desired_hint
+                            option_contract = resolved
+                            option_hint_key = desired_hint
+                            selected_tick = option_ticks.get(str(resolved["symboltoken"]))
+                            with tick_lock:
+                                ticks["option"] = dict(selected_tick) if selected_tick else None
 
                     # ------------------------------------------------
-                    # OPTION QUOTE
                     # ------------------------------------------------
-
-                    option_quote = None
-
-                    if (
-                        option_contract
-                        and option_tick
-                    ):
-
-                        option_quote = {
-                            **option_contract,
-                            "ltp": float(
-                                option_tick["ltp"]
-                            ),
-                            "timestamp":
-                                option_tick[
-                                    "timestamp"
-                                ].isoformat(),
+                    # NORMALIZED OPTION CHAIN
+                    # ------------------------------------------------
+                    option_chain = {}
+                    latest_option_tick = None
+                    for key, contract in option_master.items():
+                        token = str(contract.get("symboltoken") or "")
+                        tick = option_ticks.get(token)
+                        if not tick:
+                            continue
+                        oi = float(tick.get("open_interest") or 0.0)
+                        baseline_values = option_oi_baseline.setdefault("values", {})
+                        baseline = baseline_values.get(key)
+                        if baseline is None and oi > 0:
+                            baseline = oi
+                            baseline_values[key] = oi
+                        oi_change_pct = 0.0
+                        if baseline and baseline > 0:
+                            oi_change_pct = ((oi - float(baseline)) / float(baseline)) * 100.0
+                        option_chain[key] = {
+                            **contract,
+                            "symbol": contract.get("tradingsymbol"),
+                            "trading_symbol": contract.get("tradingsymbol"),
+                            "token": token,
+                            "ltp": tick.get("ltp"),
+                            "open_interest": oi,
+                            "oi": oi,
+                            "open_interest_change_percentage": oi_change_pct,
+                            "oi_change_pct": oi_change_pct,
+                            "volume_day": float(tick.get("cumulative_volume") or 0.0),
+                            "volume": float(tick.get("cumulative_volume") or 0.0),
+                            "total_buy_quantity": float(tick.get("total_buy_quantity") or 0.0),
+                            "total_sell_quantity": float(tick.get("total_sell_quantity") or 0.0),
+                            "best_5_buy_data": tick.get("best_5_buy_data") or [],
+                            "best_5_sell_data": tick.get("best_5_sell_data") or [],
+                            "timestamp": tick["timestamp"].isoformat() if hasattr(tick.get("timestamp"), "isoformat") else tick.get("timestamp"),
+                            "exchange_timestamp": tick.get("exchange_timestamp"),
                         }
+                        latest_option_tick = max(
+                            latest_option_tick or "",
+                            str(tick.get("timestamp")),
+                        )
+
+                    try:
+                        atomic_write_json(OPTION_OI_BASELINE_FILE, option_oi_baseline)
+                    except Exception:
+                        pass
+
+                    # Selected option quote for paper_engine.
+                    option_quote = None
+                    if option_contract:
+                        key = option_hint_key or ""
+                        option_quote = option_chain.get(key)
+
+                    # ------------------------------------------------
+                    # LIVE FUTURE CANDLE / VOLUME SOURCE
+                    # ------------------------------------------------
+
+                    if future_tick:
+                        future_candles, future_last_cumulative_volume = update_future_live_candle(
+                            future_candles, future_tick, future_last_cumulative_volume
+                        )
+                        try:
+                            atomic_write_json(FUTURE_CANDLE_CACHE_FILE, {
+                                "token": str(future_contract.get("symboltoken")) if future_contract else None,
+                                "saved_at": now_dt.isoformat(),
+                                "candles": future_candles[-300:],
+                            })
+                        except Exception:
+                            pass
 
                     # ------------------------------------------------
                     # RAW FUTURE QUOTE
@@ -1372,6 +1490,19 @@ def start_backend_factory():
                         day_low = spot
 
                     # ------------------------------------------------
+                    # OPTION VOLUME HISTORY SNAPSHOT
+                    # ------------------------------------------------
+                    if (now_dt.timestamp() - last_option_volume_save) >= 5.0:
+                        save_option_volume_state(option_volume_state)
+                        last_option_volume_save = now_dt.timestamp()
+
+                    option_volume_candles = {
+                        key: rows[-60:]
+                        for key, rows in option_volume_state.get("candles", {}).items()
+                        if isinstance(rows, list) and rows
+                    }
+
+                    # ------------------------------------------------
                     # PUBLISH DATA ONLY
                     # ------------------------------------------------
 
@@ -1418,6 +1549,9 @@ def start_backend_factory():
                         "future_contract":
                             future_contract,
 
+                        "future_candles":
+                            future_candles[-300:],
+
                         # ------------------------------
                         # RAW OPTION
                         # ------------------------------
@@ -1430,6 +1564,24 @@ def start_backend_factory():
 
                         "option_hint":
                             option_hint_key,
+
+                        "option_chain":
+                            option_chain,
+
+                        "option_chain_center":
+                            (int(round(spot / 50.0)) * 50) if spot else None,
+
+                        "option_chain_latest_tick":
+                            latest_option_tick,
+
+                        "option_chain_contracts":
+                            len(option_chain),
+
+                        # Completed/forming 5-minute traded-volume candles
+                        # for each NIFTY option contract. Strategy volume is
+                        # derived from the selected option premium, not futures.
+                        "option_volume_candles":
+                            option_volume_candles,
 
                         # ------------------------------
                         # RAW DAY RANGE
@@ -1448,8 +1600,20 @@ def start_backend_factory():
                         "market_status":
                             market_status_ist(now_dt),
 
+                        "is_cas_session":
+                            market_status_ist(now_dt) == "CAS",
+
+                        "new_entries_allowed":
+                            market_status_ist(now_dt) == "OPEN",
+
                         "websocket_connected":
                             websocket_connected,
+
+                        "worker_status":
+                            "RUNNING" if websocket_connected else "DISCONNECTED",
+
+                        "data_epoch":
+                            now_dt.isoformat(),
 
                         "last_update":
                             now_dt.strftime(
