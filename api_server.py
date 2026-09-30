@@ -8,6 +8,11 @@ from typing import Any
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+try:
+    from persistent_store import status as supabase_status
+except Exception:
+    supabase_status = lambda: {"enabled": False, "error": "persistent_store unavailable"}
+
 
 app = Flask(__name__)
 CORS(app)
@@ -130,13 +135,65 @@ def put_strategy():
     })
 
 
+def _iso_age_seconds(value):
+    if not value:
+        return None
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        return None
+
+
+def _load_dashboard_values():
+    values = {}
+    for name, path in FILES.items():
+        value = load_file(path)
+        values[name] = value if isinstance(value, dict) else {}
+    return values
+
+
+def _data_health(values):
+    raw = values.get("raw") or {}
+    ind = values.get("indicators") or {}
+    structure = values.get("market_structure") or {}
+    paper = values.get("paper") or {}
+    chain = raw.get("option_chain") if isinstance(raw.get("option_chain"), dict) else {}
+    option_vol = raw.get("option_volume_candles") if isinstance(raw.get("option_volume_candles"), dict) else {}
+    future_candles = raw.get("future_candles") if isinstance(raw.get("future_candles"), list) else []
+    volume_ratio = ind.get("volume_ratio", ind.get("signal_volume_ratio"))
+    return {
+        "option_chain_contracts": len(chain),
+        "option_chain_available": len(chain) > 0,
+        "option_volume_history_contracts": len(option_vol),
+        "option_volume_available": len(option_vol) > 0,
+        "future_candles": len(future_candles),
+        "future_candles_available": len(future_candles) > 0,
+        "volume_source": ind.get("volume_source"),
+        "volume_ratio": volume_ratio,
+        "volume_data_valid": bool(ind.get("volume_data_valid", volume_ratio is not None)),
+        "indicator_age_sec": _iso_age_seconds(ind.get("calculated_at")),
+        "structure_age_sec": _iso_age_seconds(structure.get("last_update_ist")),
+        "paper_age_sec": _iso_age_seconds(paper.get("last_update")),
+        "worker_age_sec": _iso_age_seconds(raw.get("worker_timestamp")),
+        "websocket_connected": bool(raw.get("websocket_connected")),
+        "market_status": raw.get("market_status"),
+    }
+
+
 @app.get("/api/health")
 def health():
+    values = _load_dashboard_values()
     return jsonify({
         "status": "ok",
         "mode": "PAPER_ONLY",
         "live_orders": False,
         "strategy_config": CONFIG_FILE.exists(),
+        "supabase": supabase_status(),
+        "data_health": _data_health(values),
     })
 
 
@@ -170,10 +227,7 @@ def load_file(path: Path) -> Any:
 
 @app.get("/api/dashboard")
 def dashboard():
-    values = {}
-    for name, path in FILES.items():
-        value = load_file(path)
-        values[name] = value if isinstance(value, dict) else {}
+    values = _load_dashboard_values()
 
     return jsonify({
         "api_version": 2,
