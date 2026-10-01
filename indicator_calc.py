@@ -1140,7 +1140,7 @@ def calculate_closed_candle_signal(
             vol_ratio,
 
         "volume_source":
-            "NIFTY_FUTURES_5M" if volume_source is not None else "WAITING_FOR_FUTURES_5M",
+            "OPTION_PREMIUM_5M" if vol_data_valid else "WAITING_FOR_OPTION_5M",
 
         "volume_data_valid":
             bool(vol_data_valid),
