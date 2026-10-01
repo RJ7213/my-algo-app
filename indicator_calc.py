@@ -909,6 +909,19 @@ def calculate_closed_candle_signal(
     )
 
     # --------------------------------------------------------
+    # Selected option strike
+    # --------------------------------------------------------
+    # Resolve this BEFORE the option-volume lookup.  The option volume
+    # history is keyed by the actual selected strike + CE/PE.
+    option_strike = int(
+        round(
+            float(spot)
+            / PSYCHOLOGICAL_STEP
+        )
+        * PSYCHOLOGICAL_STEP
+    )
+
+    # --------------------------------------------------------
     # Volume
     # --------------------------------------------------------
     # Strategy volume is the traded volume of the actual option premium
@@ -1067,18 +1080,6 @@ def calculate_closed_candle_signal(
             f"{trade_type} | "
             f"Runway {runway_distance:.1f} pts"
         )
-
-    # --------------------------------------------------------
-    # Option strike
-    # --------------------------------------------------------
-
-    option_strike = int(
-        round(
-            float(spot)
-            / PSYCHOLOGICAL_STEP
-        )
-        * PSYCHOLOGICAL_STEP
-    )
 
     # --------------------------------------------------------
     # Next wall
