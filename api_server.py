@@ -168,6 +168,7 @@ def _data_health(values):
     return {
         "option_chain_contracts": len(chain),
         "option_chain_available": len(chain) > 0,
+        "option_tick_count": int(raw.get("option_tick_count") or 0),
         "option_volume_history_contracts": len(option_vol),
         "option_volume_available": len(option_vol) > 0,
         "future_candles": len(future_candles),
