@@ -864,6 +864,8 @@ def start_backend_factory():
             }
 
             option_ticks = {}
+            option_tick_count = 0
+            last_option_diag = 0.0
             option_token_to_key = {
                 str(contract["symboltoken"]): key
                 for key, contract in option_master.items()
@@ -960,7 +962,7 @@ def start_backend_factory():
                     # --------------------------------------------
 
                     sws.subscribe(
-                        "nifty-spot",
+                        "NIFTYSPOT",
                         3,
                         [
                             {
@@ -983,7 +985,7 @@ def start_backend_factory():
                     if future_contract:
 
                         sws.subscribe(
-                            "nifty-future",
+                            "NIFTFUT",
                             3,
                             [
                                 {
@@ -1018,8 +1020,10 @@ def start_backend_factory():
                         chunk = option_tokens[i:i + chunk_size]
                         if not chunk:
                             continue
+                        # SmartAPI correlationID is limited to 10 alphanumeric characters.
+                        # Keep every option-chain subscription request within that contract.
                         sws.subscribe(
-                            f"nifty-options-{i // chunk_size}",
+                            f"NOPT{i // chunk_size:02d}",
                             3,
                             [{"exchangeType": 2, "tokens": chunk}],
                         )
@@ -1035,6 +1039,7 @@ def start_backend_factory():
                     )
 
             def on_data(wsapp, message):
+                nonlocal option_tick_count
                 try:
                     tick = parse_tick(message)
 
@@ -1064,6 +1069,7 @@ def start_backend_factory():
                         elif token in option_token_to_key:
 
                             option_ticks[token] = tick
+                            option_tick_count += 1
                             update_option_volume_state(
                                 option_volume_state,
                                 option_token_to_key[token],
@@ -1606,6 +1612,9 @@ def start_backend_factory():
 
                         "option_chain_contracts":
                             len(option_chain),
+
+                        "option_tick_count":
+                            int(option_tick_count),
 
                         # Completed/forming 5-minute traded-volume candles
                         # for each NIFTY option contract. Strategy volume is
