@@ -613,25 +613,55 @@ def parse_tick(message):
     }
 
 
+HISTORICAL_MIN_INTERVAL = 1.5
+_last_historical_call = 0.0
+_historical_call_lock = threading.Lock()
+
 def fetch_historical_candles(api, exchange, token, interval="FIVE_MINUTE", days=3):
-    """Fetch startup history once. Live candles are then maintained from WebSocket ticks."""
+    """Fetch startup history with a broker-safe request throttle. Live candles are maintained from WebSocket ticks."""
+    global _last_historical_call
     if not token:
         return []
+
     now_dt = now_ist()
     from_d = (now_dt - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
     to_d = now_dt.strftime("%Y-%m-%d %H:%M")
-    try:
-        res = api.getCandleData({
-            "exchange": exchange,
-            "symboltoken": str(token),
-            "interval": interval,
-            "fromdate": from_d,
-            "todate": to_d,
-        })
-        if res and res.get("status") and res.get("data"):
-            return valid_candles(res.get("data")) or []
-    except Exception as exc:
-        logging.warning("Historical %s %s candle error: %s", exchange, token, exc)
+    params = {
+        "exchange": exchange,
+        "symboltoken": str(token),
+        "interval": interval,
+        "fromdate": from_d,
+        "todate": to_d,
+    }
+
+    # Angel One historical API is rate-limited. Serialize calls and keep
+    # a safety gap so spot/futures startup requests cannot burst together.
+    with _historical_call_lock:
+        elapsed = time.monotonic() - _last_historical_call
+        if elapsed < HISTORICAL_MIN_INTERVAL:
+            time.sleep(HISTORICAL_MIN_INTERVAL - elapsed)
+        _last_historical_call = time.monotonic()
+
+    for attempt in range(2):
+        try:
+            res = api.getCandleData(params)
+            if res and res.get("status") and res.get("data"):
+                return valid_candles(res.get("data")) or []
+            logging.warning(
+                "Historical %s %s candle returned no data (attempt %d)",
+                exchange, token, attempt + 1,
+            )
+        except Exception as exc:
+            logging.warning(
+                "Historical %s %s candle error (attempt %d): %s",
+                exchange, token, attempt + 1, exc,
+            )
+
+        if attempt == 0:
+            time.sleep(2.0)
+            with _historical_call_lock:
+                _last_historical_call = time.monotonic()
+
     return []
 
 
