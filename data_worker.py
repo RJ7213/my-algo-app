@@ -220,26 +220,35 @@ def option_type(item):
 
 
 def strike_value(item):
-    """Resolve the actual NIFTY option strike without joining expiry digits to the strike."""
-    # Prefer the broker's explicit strike fields.
-    for key in ("strike", "strikePrice", "strikeprice"):
+    """Resolve the actual NIFTY option strike from the trading symbol first."""
+    symbol = str(item.get("tradingsymbol") or item.get("symbol") or "").upper().strip()
+
+    # NIFTY symbols can encode the strike in different forms.
+    # Examples seen from the broker master:
+    #   NIFTY25JUN304500PE -> 30450
+    #   NIFTY28SEP279000CE -> 27900
+    #   NIFTY29DEC264500CE -> 26450
+    # The six-digit suffix is strike x10.
+    m = re.search(r"NIFTY\d{2}[A-Z]{3}(?:\d{2})?(\d{5,6})(CE|PE)$", symbol)
+    if m:
         try:
-            raw = item.get(key)
-            if raw is None or raw == "":
-                continue
-            value = float(raw)
-            # SmartAPI instrument master may encode strike x100.
-            if value > 100000:
-                value /= 100.0
+            raw_strike = float(m.group(1))
+            value = raw_strike / 10.0 if raw_strike >= 100000 else raw_strike
             if 10000 <= value <= 50000:
                 return value
         except (TypeError, ValueError):
             pass
 
-    # Fallback: use only the final five digits immediately before CE/PE.
-    # This prevents expiry-year digits (for example 26) from becoming part
-    # of a NIFTY strike such as 22450.
-    symbol = str(item.get("tradingsymbol") or item.get("symbol") or "").upper().strip()
+    # More general suffix fallback for symbols whose expiry format differs.
+    m = re.search(r"(\d{6})(?:CE|PE)$", symbol)
+    if m:
+        try:
+            value = float(m.group(1)) / 10.0
+            if 10000 <= value <= 50000:
+                return value
+        except ValueError:
+            pass
+
     m = re.search(r"(\d{5})(?:CE|PE)$", symbol)
     if m:
         try:
@@ -248,6 +257,20 @@ def strike_value(item):
                 return value
         except ValueError:
             pass
+
+    # Last fallback: broker strike field. Different SmartAPI master responses
+    # may encode this numerically, so accept only a value that normalizes into
+    # a sensible NIFTY range.
+    for key in ("strike", "strikePrice", "strikeprice"):
+        raw = item.get(key)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        candidates = [value, value / 10.0, value / 100.0]
+        for candidate in candidates:
+            if 10000 <= candidate <= 50000:
+                return candidate
 
     logging.warning("Unable to resolve valid NIFTY strike: %s", symbol)
     return None
