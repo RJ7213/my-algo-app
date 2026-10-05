@@ -899,11 +899,15 @@ def main() -> None:
             continue
 
         # Avoid needless recalculation when worker data hasn't changed.
+        # data_worker publishes worker_timestamp/data_epoch, not last_update_ist.
+        # Use the worker timestamp so structure refreshes on every new raw snapshot.
         signature = (
-            raw.get("last_update_ist"),
-            raw.get("spot_timestamp"),
+            raw.get("worker_timestamp")
+            or raw.get("data_epoch")
+            or raw.get("spot_timestamp"),
             raw.get("option_chain_latest_tick"),
             len(raw.get("option_chain") or {}),
+            raw.get("live_spot"),
         )
 
         if signature == last_signature:
