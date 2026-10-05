@@ -220,33 +220,37 @@ def option_type(item):
 
 
 def strike_value(item):
+    """Resolve the actual NIFTY option strike without joining expiry digits to the strike."""
+    # Prefer the broker's explicit strike fields.
     for key in ("strike", "strikePrice", "strikeprice"):
         try:
-            value = float(item.get(key))
-
-            # SmartAPI may return strike in paise.
+            raw = item.get(key)
+            if raw is None or raw == "":
+                continue
+            value = float(raw)
+            # SmartAPI instrument master may encode strike x100.
             if value > 100000:
                 value /= 100.0
-
-            return value
+            if 10000 <= value <= 50000:
+                return value
         except (TypeError, ValueError):
             pass
 
-    symbol = str(item.get("tradingsymbol", ""))
-
-    m = re.search(r"(\d+(?:\.\d+)?)(?:CE|PE)$", symbol.upper())
-
+    # Fallback: use only the final five digits immediately before CE/PE.
+    # This prevents expiry-year digits (for example 26) from becoming part
+    # of a NIFTY strike such as 22450.
+    symbol = str(item.get("tradingsymbol") or item.get("symbol") or "").upper().strip()
+    m = re.search(r"(\d{5})(?:CE|PE)$", symbol)
     if m:
         try:
             value = float(m.group(1))
-            if value > 100000:
-                value /= 100.0
-            return value
+            if 10000 <= value <= 50000:
+                return value
         except ValueError:
             pass
 
+    logging.warning("Unable to resolve valid NIFTY strike: %s", symbol)
     return None
-
 
 def is_real_nifty_option(item):
     symbol = str(item.get("tradingsymbol", "")).upper()
