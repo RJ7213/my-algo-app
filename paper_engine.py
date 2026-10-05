@@ -1863,9 +1863,20 @@ def start_paper_engine() -> None:
 
             if not isinstance(ind, dict) or not isinstance(structure, dict):
                 if time.time() - last_missing_log > 10:
+                    ind_exists = INDICATOR_FILE.exists()
+                    structure_exists = STRUCTURE_FILE.exists()
                     logging.warning(
-                        "⏳ Waiting for processed_indicators.json / "
-                        "processed_market_structure.json"
+                        "⏳ Waiting for processors | indicators=%s (%s) | structure=%s (%s) | raw=%s",
+                        "OK" if isinstance(ind, dict) else "INVALID/MISSING",
+                        str(INDICATOR_FILE),
+                        "OK" if isinstance(structure, dict) else "INVALID/MISSING",
+                        str(STRUCTURE_FILE),
+                        str(RAW_FILE),
+                    )
+                    logging.warning(
+                        "    Files exist: processed_indicators=%s, processed_market_structure=%s",
+                        ind_exists,
+                        structure_exists,
                     )
                     last_missing_log = time.time()
                 time.sleep(LOOP_SEC)
