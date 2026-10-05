@@ -1666,6 +1666,16 @@ def start_backend_factory():
                         "market_status":
                             market_status_ist(now_dt),
 
+                        # Explicit session type consumed by paper_engine.
+                        # OPEN -> CONTINUOUS, CAS -> CAS, CLOSED -> CLOSED.
+                        "session_type": (
+                            "CONTINUOUS"
+                            if market_status_ist(now_dt) == "OPEN"
+                            else "CAS"
+                            if market_status_ist(now_dt) == "CAS"
+                            else "CLOSED"
+                        ),
+
                         "is_cas_session":
                             market_status_ist(now_dt) == "CAS",
 
