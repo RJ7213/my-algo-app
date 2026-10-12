@@ -766,6 +766,61 @@ def update_option_volume_state(state, key, tick):
     candles_map[key] = rows[-80:]
 
 
+def merge_option_historical_volume(state, key, historical_rows):
+    """
+    Backfill completed 5-minute option-volume candles from Angel One history.
+    Historical rows use the SmartAPI candle schema:
+    [timestamp, open, high, low, close, traded_volume].
+
+    Live WebSocket volume is kept for the current/forming bucket. Historical
+    candles only fill missing completed buckets, preventing double counting.
+    """
+    if not isinstance(state, dict) or not key or not isinstance(historical_rows, list):
+        return 0
+
+    candles_map = state.setdefault("candles", {})
+    existing = candles_map.setdefault(key, [])
+    by_bucket = {}
+
+    for row in existing:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(row[0]))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=IST)
+            bucket = candle_bucket(dt).isoformat()
+            by_bucket[bucket] = [bucket, max(0.0, float(row[1] or 0.0))]
+        except Exception:
+            continue
+
+    current_bucket = candle_bucket(now_ist())
+    added = 0
+    for row in historical_rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 6:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(row[0]))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=IST)
+            bucket_dt = candle_bucket(dt)
+            # Never replace the live/forming candle with REST data.
+            if bucket_dt >= current_bucket:
+                continue
+            bucket = bucket_dt.isoformat()
+            volume = max(0.0, float(row[5] or 0.0))
+            if bucket not in by_bucket:
+                added += 1
+            # For completed buckets, broker historical volume is the complete
+            # candle total and supersedes a partial live delta aggregate.
+            by_bucket[bucket] = [bucket, volume]
+        except Exception:
+            continue
+
+    candles_map[key] = sorted(by_bucket.values(), key=lambda r: str(r[0]))[-80:]
+    return added
+
+
 def save_option_volume_state(state):
     try:
         # Keep only recent contracts/candles so data_raw.json stays compact.
@@ -907,6 +962,8 @@ def start_backend_factory():
 
             option_volume_state = load_option_volume_state(baseline_date)
             last_option_volume_save = 0.0
+            option_volume_history_loaded = set()
+            last_option_volume_history_attempt = 0.0
 
             future_candles = []
             future_last_cumulative_volume = None
@@ -1246,9 +1303,13 @@ def start_backend_factory():
                         now_dt - last_candle_attempt
                     ).total_seconds()
 
+                    # Historical spot candles are a startup/recovery backfill,
+                    # not a 60-second polling feed. Live OHLC is maintained from
+                    # WebSocket ticks. Refresh at most every 15 minutes to reduce
+                    # Angel One historical API rate-limit errors.
                     candle_due = (
                         not spot_candles
-                        or seconds_since_success >= 60
+                        or seconds_since_success >= 900
                     )
 
                     retry_allowed = (
@@ -1411,6 +1472,56 @@ def start_backend_factory():
                             selected_tick = option_ticks.get(str(resolved["symboltoken"]))
                             with tick_lock:
                                 ticks["option"] = dict(selected_tick) if selected_tick else None
+
+                            # Backfill historical 5-minute traded volume for this
+                            # selected CE/PE once. This is option-premium volume,
+                            # not futures volume. Rate-limit contract switches so
+                            # strategy changes cannot burst REST requests.
+                            history_key = (
+                                str(resolved.get("symboltoken")),
+                                desired_hint,
+                                baseline_date,
+                            )
+                            now_mono = time.monotonic()
+                            if (
+                                history_key not in option_volume_history_loaded
+                                and now_mono - last_option_volume_history_attempt >= 30.0
+                            ):
+                                last_option_volume_history_attempt = now_mono
+                                try:
+                                    history_rows = fetch_historical_candles(
+                                        api,
+                                        "NFO",
+                                        resolved.get("symboltoken"),
+                                        "FIVE_MINUTE",
+                                        days=3,
+                                    )
+                                    added_rows = merge_option_historical_volume(
+                                        option_volume_state,
+                                        desired_hint,
+                                        history_rows,
+                                    )
+                                    # Remember the attempt even when the broker
+                                    # returns no history, so this contract is not
+                                    # requested again every 30 seconds.
+                                    option_volume_history_loaded.add(history_key)
+                                    if history_rows:
+                                        logging.info(
+                                            "Option volume history backfilled: %s | %d candles added",
+                                            desired_hint,
+                                            added_rows,
+                                        )
+                                    else:
+                                        logging.warning(
+                                            "Option volume history unavailable for %s; live volume will continue",
+                                            desired_hint,
+                                        )
+                                except Exception as exc:
+                                    logging.warning(
+                                        "Option volume history backfill failed for %s: %s",
+                                        desired_hint,
+                                        exc,
+                                    )
 
                     # ------------------------------------------------
                     # ------------------------------------------------
