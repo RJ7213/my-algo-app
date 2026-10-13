@@ -245,6 +245,7 @@ def market_open_from_raw(raw: Dict[str, Any]) -> bool:
 # SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are configured.
 _REMOTE_LEDGER = None
 _REMOTE_STATE = None
+_REMOTE_RESTORED = False
 
 
 def default_ledger() -> Dict[str, Any]:
@@ -323,7 +324,7 @@ def recalculate_ledger(ledger: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_ledger() -> Dict[str, Any]:
-    global _REMOTE_LEDGER, _REMOTE_STATE
+    global _REMOTE_LEDGER, _REMOTE_STATE, _REMOTE_RESTORED
 
     local = load_json(LEDGER_FILE, None)
     remote = None
@@ -332,6 +333,7 @@ def load_ledger() -> Dict[str, Any]:
 
     if remote is not None:
         _REMOTE_LEDGER, _REMOTE_STATE = remote
+        _REMOTE_RESTORED = True
         ledger = _REMOTE_LEDGER
         # Keep a local recovery copy too.
         try:
@@ -339,9 +341,16 @@ def load_ledger() -> Dict[str, Any]:
         except Exception:
             pass
     elif isinstance(local, dict):
+        _REMOTE_RESTORED = False
         ledger = local
+        logging.warning(
+            "PERSISTENCE FALLBACK | Supabase ledger unavailable; using local recovery file | wallet=%s | trades=%s",
+            ledger.get("wallet_balance"), len(ledger.get("trades", [])) if isinstance(ledger.get("trades"), list) else "invalid"
+        )
     else:
+        _REMOTE_RESTORED = False
         ledger = default_ledger()
+        logging.warning("PERSISTENCE FALLBACK | No Supabase ledger or local ledger found; starting default paper ledger")
 
     defaults = default_ledger()
     for key, value in defaults.items():
@@ -354,7 +363,9 @@ def save_ledger(ledger: Dict[str, Any], force_remote: bool = False) -> Dict[str,
     ledger = recalculate_ledger(ledger)
     atomic_write_json(LEDGER_FILE, ledger)
     if remote_save_bundle is not None and remote_persistence_enabled():
-        remote_save_bundle(ledger, _REMOTE_STATE or {}, force=force_remote)
+        saved = remote_save_bundle(ledger, _REMOTE_STATE or {}, force=force_remote)
+        if force_remote and not saved:
+            logging.error("Forced Supabase ledger save did not complete; local recovery file retained")
     return ledger
 
 
@@ -1522,7 +1533,9 @@ def save_state(state: Dict[str, Any], force_remote: bool = False) -> None:
     if remote_save_bundle is not None and remote_persistence_enabled():
         # Ledger is loaded globally by start_paper_engine before state is saved.
         current_ledger = load_json(LEDGER_FILE, default_ledger())
-        remote_save_bundle(current_ledger, state, force=force_remote)
+        saved = remote_save_bundle(current_ledger, state, force=force_remote)
+        if force_remote and not saved:
+            logging.error("Forced Supabase state save did not complete; local recovery file retained")
 
 
 # ============================================================
@@ -1800,6 +1813,19 @@ def start_paper_engine() -> None:
 
     ledger = load_ledger()
     state = load_state()
+    if _REMOTE_RESTORED:
+        logging.info(
+            "RESTART RESTORE VERIFIED | source=Supabase | wallet=%s | trades=%s | active_trades=%s | state_keys=%s",
+            ledger.get("wallet_balance"),
+            len(ledger.get("trades", [])),
+            sum(1 for t in ledger.get("trades", []) if t.get("status") == "ACTIVE"),
+            len(state),
+        )
+    else:
+        logging.warning(
+            "RESTART RESTORE NOT VERIFIED FROM SUPABASE | using local/default recovery | wallet=%s | trades=%s",
+            ledger.get("wallet_balance"), len(ledger.get("trades", []))
+        )
 
     last_missing_log = 0.0
 
